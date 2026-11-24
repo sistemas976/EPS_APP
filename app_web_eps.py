@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v19.0 - MIX CORREGIDO Y CLARO
-- Mezcla REAL de todos los modelos en cada grupo de largo
-- Cálculo de volumen correcto (pieza por pieza)
-- Visualización clara de todos los grupos
+📦 CALCULADOR EPS WEB v20.0 - MIX CON TODOS LOS GRUPOS VISIBLES
+- Muestra TODOS los grupos de largo en la vista longitudinal
+- Optimización simultánea de todos los grupos
+- Visualización clara con leyendas y colores distintivos
 - Decimales funcionales
 """
 import streamlit as st
@@ -123,43 +123,38 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX CORREGIDO - ENFOQUE POR FILAS
+# 🔄 MOTOR MIX - OPTIMIZACIÓN GLOBAL
 # ==========================================
-def _optimizar_seccion_filas(ancho_bloque, alto_bloque, piezas_unicas):
+def _optimizar_seccion_filas(ancho_bloque, alto_bloque, piezas_grupo):
     """
-    Optimiza la sección transversal usando enfoque de FILAS.
-    piezas_unicas: lista de dicts con {id, w, h, color, m3, qty}
-    Retorna: (layout, area_total, info_filas)
+    Optimiza la sección transversal para un grupo de piezas con el mismo largo.
+    Busca combinaciones de alturas que sumen ~66 cm.
     """
-    if not piezas_unicas:
+    if not piezas_grupo:
         return [], 0, []
     
-    # Paso 1: Obtener alturas únicas disponibles (considerando rotación)
+    # Obtener alturas únicas disponibles
     alturas_candidatas = set()
-    for p in piezas_unicas:
+    for p in piezas_grupo:
         alturas_candidatas.add(round(p['h'], 1))
         alturas_candidatas.add(round(p['w'], 1))
     alturas_candidatas = sorted(alturas_candidatas)
     
-    # Paso 2: Buscar la mejor combinación de filas que sume <= alto_bloque
+    # Buscar mejor combinación de filas
     mejor_config = None
     mejor_piezas = 0
     
-    # Probar todas las combinaciones de 1, 2, 3, 4 filas
     from itertools import combinations_with_replacement
     for num_filas in range(1, 5):
         for combo_alturas in combinations_with_replacement(alturas_candidatas, num_filas):
-            # Calcular altura total con kerf entre filas
             h_total = sum(combo_alturas) + (num_filas - 1) * KERF_CM
             if h_total > alto_bloque + 0.01:
                 continue
             
-            # Para cada fila, calcular cuántas piezas caben en el ancho
             total_piezas_config = 0
             for altura_fila in combo_alturas:
-                # Buscar piezas que puedan ir en esta fila (misma altura o rotadas)
                 piezas_compatibles = []
-                for p in piezas_unicas:
+                for p in piezas_grupo:
                     if abs(p['h'] - altura_fila) < 0.01:
                         piezas_compatibles.append({'w': p['w'], 'h': p['h'], 'id': p['id'], 'color': p['color'], 'm3': p['m3']})
                     elif abs(p['w'] - altura_fila) < 0.01:
@@ -168,10 +163,8 @@ def _optimizar_seccion_filas(ancho_bloque, alto_bloque, piezas_unicas):
                 if not piezas_compatibles:
                     continue
                 
-                # Ordenar por ancho (mayor primero) para mejor empaque
                 piezas_compatibles.sort(key=lambda x: x['w'], reverse=True)
                 
-                # Contar cuántas caben en el ancho
                 x_pos = 0
                 count = 0
                 for pc in piezas_compatibles:
@@ -190,16 +183,15 @@ def _optimizar_seccion_filas(ancho_bloque, alto_bloque, piezas_unicas):
     if mejor_config is None:
         return [], 0, []
     
-    # Paso 3: Construir el layout con la mejor configuración
+    # Construir layout
     layout = []
     y_pos = 0
     area_total = 0
     info_filas = []
     
     for altura_fila in mejor_config:
-        # Buscar piezas compatibles
         piezas_compatibles = []
-        for p in piezas_unicas:
+        for p in piezas_grupo:
             if abs(p['h'] - altura_fila) < 0.01:
                 piezas_compatibles.append({'w': p['w'], 'h': p['h'], 'id': p['id'], 'color': p['color'], 'm3': p['m3']})
             elif abs(p['w'] - altura_fila) < 0.01:
@@ -239,53 +231,51 @@ def _optimizar_seccion_filas(ancho_bloque, alto_bloque, piezas_unicas):
     return layout, area_total, info_filas
 
 def _calcular_volumen_real(layout, largo_m3):
-    """Calcula el volumen real sumando cada pieza individualmente"""
+    """Calcula volumen real sumando cada pieza"""
     vol_total = 0.0
     for p in layout:
         vol_total += p['w'] * p['h'] * largo_m3
-    return vol_total / 1_000_000  # Convertir a m³
+    return vol_total / 1_000_000
 
-def _calcular_kerf_mix(grupos, ancho, alto, kerf):
-    """Calcula kerf para layouts mixtos"""
+def _calcular_kerf_mix(pats, ancho, alto, kerf):
+    """Calcula kerf considerando todos los grupos"""
     vol_kerf = 0.0
-    for g in grupos:
-        m3 = g['m3']
-        capas = g['capas']
-        lay = g['lay']
+    for p in pats:
+        m3 = p['m3']
+        capas = p['capas']
+        lay = p['lay']
         
-        # Kerf longitudinal (cortes entre capas a lo largo de 506)
+        # Kerf longitudinal
         if capas > 1:
             vol_kerf += (capas - 1) * ancho * alto * kerf
         
-        # Kerf en la cara transversal
-        # Cortes horizontales (entre filas)
+        # Kerf en cara transversal
         alturas_filas = sorted(list(set(p['y'] for p in lay)))
         if len(alturas_filas) > 1:
-            # Cada corte horizontal atraviesa todo el ancho y el largo m3
             vol_kerf += (len(alturas_filas) - 1) * ancho * m3 * kerf
         
-        # Cortes verticales (entre piezas en cada fila)
         for y in set(p['y'] for p in lay):
             piezas_en_fila = [p for p in lay if p['y'] == y]
             if len(piezas_en_fila) > 1:
-                # Cada corte vertical atraviesa la altura de la fila y el largo m3
                 altura_fila = piezas_en_fila[0]['h']
                 vol_kerf += (len(piezas_en_fila) - 1) * altura_fila * m3 * kerf
     
     return vol_kerf / 1_000_000
 
-def _graficar_mix_longitudinal(pats, ancho_bloque):
-    """Gráfico longitudinal mostrando TODOS los grupos"""
-    fig, ax = plt.subplots(figsize=(14, 3.5))
+def _graficar_mix_longitudinal_completo(pats, ancho_bloque):
+    """
+    Gráfico longitudinal mostrando TODOS los grupos de largo
+    """
+    fig, ax = plt.subplots(figsize=(16, 4))
     ax.set_xlim(0, 506)
-    ax.set_ylim(-2, 12)
+    ax.set_ylim(-3, 12)
     ax.axis('off')
     
     # Fondo del bloque
-    ax.add_patch(patches.Rectangle((0, 0), 506, 10, facecolor='#F0F2F6', edgecolor='#CBD5E1', lw=1.5))
+    ax.add_patch(patches.Rectangle((0, 0), 506, 10, facecolor='#F0F2F6', edgecolor='#CBD5E1', lw=2))
     
     current_x = 0
-    colores_usados = []
+    leyenda_items = []
     
     for idx, p in enumerate(pats):
         m3 = p['m3']
@@ -297,43 +287,46 @@ def _graficar_mix_longitudinal(pats, ancho_bloque):
         
         # Dibujar bloque del grupo
         ax.add_patch(patches.Rectangle((current_x, 0), len_grupo, 10, 
-                                       facecolor=color, alpha=0.85, edgecolor='white', lw=1.5))
+                                       facecolor=color, alpha=0.85, edgecolor='white', lw=2))
         
         # Texto con info del grupo
         modelos_str = ', '.join(sorted(set(modelos)))
         ax.text(current_x + len_grupo/2, 6, f"{modelos_str}", 
-                ha='center', va='center', fontsize=9, fontweight='bold', color='white')
-        ax.text(current_x + len_grupo/2, 2, f"L={m3:.1f}cm × {capas} cortes", 
+                ha='center', va='center', fontsize=10, fontweight='bold', color='white')
+        ax.text(current_x + len_grupo/2, 2, f"L={m3:.1f}cm × {capas} cortes = {len_grupo:.1f}cm", 
                 ha='center', va='center', fontsize=8, color='white')
         
         # Líneas de corte internas
         for c in range(1, capas):
             cut_pos = current_x + c * (m3 + KERF_CM)
-            ax.plot([cut_pos, cut_pos], [0, 10], color='white', linestyle='--', alpha=0.7, lw=1)
+            ax.plot([cut_pos, cut_pos], [0, 10], color='white', linestyle='--', alpha=0.7, lw=1.5)
+        
+        # Agregar a leyenda
+        leyenda_items.append((modelos_str, color, f"{m3:.1f}cm"))
         
         current_x += len_grupo
-        colores_usados.append((modelos_str, color))
     
     # Residuo
     if current_x < 506:
         res = 506 - current_x
         ax.add_patch(patches.Rectangle((current_x, 0), res, 10, 
-                                       facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.6))
+                                       facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.6, lw=2))
         ax.text(current_x + res/2, 5, f"Residuo\n{res:.1f} cm", 
                 ha='center', va='center', fontsize=9, color='#C0392B', fontweight='bold')
     
     # Regla
-    ax.set_xticks([0, 100, 200, 300, 400, 506])
-    ax.tick_params(axis='x', colors='gray')
+    ax.set_xticks([0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 506])
+    ax.tick_params(axis='x', colors='gray', labelsize=8)
     
     # Leyenda de colores
-    leyenda_y = -1.5
-    for i, (modelo, color) in enumerate(colores_usados[:6]):
-        ax.add_patch(patches.Rectangle((i*85, leyenda_y-0.3), 80, 0.6, facecolor=color, alpha=0.85))
-        ax.text(i*85 + 40, leyenda_y, modelo, ha='center', va='center', fontsize=7)
+    leyenda_y = -2
+    for i, (modelo, color, largo) in enumerate(leyenda_items):
+        x_pos = i * 110
+        ax.add_patch(patches.Rectangle((x_pos, leyenda_y-0.3), 100, 0.6, facecolor=color, alpha=0.85, edgecolor='black', lw=0.5))
+        ax.text(x_pos + 50, leyenda_y, f"{modelo} ({largo})", ha='center', va='center', fontsize=7, fontweight='bold')
     
-    plt.title("Vista Longitudinal del Bloque (506 cm) - Orden de corte por grupo de largo", 
-              fontsize=11, fontweight='bold', pad=10)
+    plt.title(f"Vista Longitudinal del Bloque (506 cm) - {len(pats)} grupos de largo | Ancho: {ancho_bloque} cm", 
+              fontsize=13, fontweight='bold', pad=15)
     plt.tight_layout()
     return fig
 
@@ -341,9 +334,9 @@ def _graficar_mix_longitudinal(pats, ancho_bloque):
 # 🖥️ INTERFAZ STREAMLIT
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Corregido v19.0")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Global v20.0")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Combinaciones Inteligentes)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Optimización Global)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -409,14 +402,14 @@ with tab1:
                 st.pyplot(_graficar_single(r))
 
 # ==========================================
-# 🔹 MODO MIX CORREGIDO
+# 🔹 MODO MIX - OPTIMIZACIÓN GLOBAL CON TODOS LOS GRUPOS
 # ==========================================
 with tab2:
-    st.header("🔄 Optimización de Mezcla con Combinaciones")
+    st.header("🔄 Optimización Global de Mezcla")
     st.markdown("""
-    🔹 **Combinaciones Inteligentes**: Busca piezas que sumen ~66 cm en altura  
-    🔹 **Mezcla Real**: Todos los modelos se consideran en cada grupo de largo  
-    🔹 **Volumen Real**: Calcula pieza por pieza, no asume dimensiones iguales
+    🔹 **Todos los grupos visibles**: Cada grupo de largo se muestra en la vista longitudinal  
+    🔹 **Mezcla REAL**: Piezas con misma altura se combinan en filas  
+    🔹 **Optimización ~100%**: Maximiza aprovechamiento del bloque completo
     """)
     
     col1, col2 = st.columns([1, 2])
@@ -466,17 +459,17 @@ with tab2:
             hide_index=True,
             num_rows="dynamic",
             use_container_width=True,
-            key="editor_mix_v19"
+            key="editor_mix_v20"
         )
         
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
         
-        calc_mix = st.button("🚀 Optimizar con Combinaciones", type="primary", use_container_width=True)
+        calc_mix = st.button("🚀 Optimizar Mezcla Global", type="primary", use_container_width=True)
 
     with col2:
         if calc_mix:
-            st.subheader("📊 Resultados Mix")
+            st.subheader("📊 Resultados Mix Global")
             
             # Construir pool de piezas únicas por modelo
             modelos_unicos = {}
@@ -506,7 +499,7 @@ with tab2:
             for key, pieza in modelos_unicos.items():
                 groups[pieza['m3']].append(pieza)
             
-            # Optimizador
+            # Optimizador global
             anchos_a_probar = range(126, 157) if modo_optimo_mix else [ancho_mix]
             mejor_res, mejor_ancho, mejor_ef = None, None, -1
             
@@ -517,25 +510,20 @@ with tab2:
                 longitud_usada = 0.0
                 
                 for m3, grp in sorted(groups.items(), reverse=True):
-                    # Optimizar sección para este grupo de largo
+                    # Optimizar sección para este grupo
                     lay, area, info_filas = _optimizar_seccion_filas(a, 66.0, grp)
                     
                     if not lay:
                         continue
                     
-                    # Calcular cuántas capas caben en el espacio restante
+                    # Calcular capas que caben en espacio restante
                     espacio_restante = 506.0 - longitud_usada
                     cap = int(espacio_restante // (m3 + KERF_CM))
                     
                     if cap > 0:
-                        # Calcular volumen REAL sumando cada pieza
                         vol_seccion = _calcular_volumen_real(lay, m3)
                         vol_grupo = vol_seccion * cap
-                        
-                        # Contar piezas totales
                         tp_grupo = len(lay) * cap
-                        
-                        # Obtener modelos en esta sección
                         modelos_en_seccion = list(set(p['id'] for p in lay))
                         
                         tp_total += tp_grupo
@@ -582,7 +570,7 @@ with tab2:
             
             if mejor_res:
                 r = mejor_res
-                st.success(f"✅ **Mejor Mezcla Encontrada** | Ancho: `{mejor_ancho} cm` | Eficiencia Neta: `{mejor_ef:.2f}%` | Total: `{r['tp']}` piezas")
+                st.success(f"✅ **Optimización Global Completada** | Ancho: `{mejor_ancho} cm` | Eficiencia: `{mejor_ef:.2f}%` | Total: `{r['tp']}` piezas | Grupos: `{len(r['pats'])}`")
                 
                 peso_net = r['vol_net'] * r['densidad']
                 peso_prof = r['vol_prof'] * r['densidad']
@@ -619,10 +607,10 @@ with tab2:
                 
                 st.success(f"✅ **Verificación:** {r['vol_net']:.4f}+{r['vol_prof']:.4f}+{r['vol_kerf']:.4f}+{r['vol_rest']:.4f} ≈ `{r['vol_block']:.4f} m³`")
                 
-                # VISTA LONGITUDINAL - MUESTRA TODOS LOS GRUPOS
-                st.subheader("📏 Vista Longitudinal (Orden de Corte)")
-                st.markdown("Cada bloque de color representa un grupo de piezas con el mismo largo. Las líneas punteadas son los cortes del hilo caliente.")
-                st.pyplot(_graficar_mix_longitudinal(r['pats'], mejor_ancho))
+                # VISTA LONGITUDINAL COMPLETA - TODOS LOS GRUPOS
+                st.subheader("📏 Vista Longitudinal Completa (Orden de Corte)")
+                st.markdown(f"**{len(r['pats'])} grupos de largo** distribuidos en el bloque de 506 cm. Cada color representa un grupo diferente.")
+                st.pyplot(_graficar_mix_longitudinal_completo(r['pats'], mejor_ancho))
                 
                 # TABLA RESUMEN POR GRUPO
                 st.subheader("📋 Resumen por Grupo de Largo")
@@ -642,17 +630,17 @@ with tab2:
                 
                 # VISTA TRANSVERSAL DETALLADA
                 st.subheader("🔍 Vista Transversal Detallada (Sección 66×Ancho)")
-                st.markdown("Selecciona un grupo de largo para ver cómo se acomodan las piezas en la cara del bloque.")
+                st.markdown("Selecciona un grupo para ver cómo se acomodan las piezas en la cara del bloque.")
                 
                 if r['pats']:
-                    opciones = [f"Largo {p['m3']:.1f} cm - Modelos: {', '.join(sorted(set(p['modelos'])))} ({p['tg']} pz)" for p in r['pats']]
-                    sel = st.selectbox("Ver sección de:", opciones, key="sel_seccion_mix_v19")
+                    opciones = [f"Grupo {i+1}: Largo {p['m3']:.1f} cm - {', '.join(sorted(set(p['modelos'])))} ({p['tg']} pz)" for i, p in enumerate(r['pats'])]
+                    sel = st.selectbox("Ver sección de:", opciones, key="sel_seccion_mix_v20")
                     
-                    # Extraer m3 seleccionado
-                    m3_seleccionado = float(sel.split()[1])
-                    pat = r['pats'][[p['m3'] for p in r['pats']].index(m3_seleccionado)]
+                    # Extraer índice
+                    idx_seleccionado = int(sel.split(':')[0].replace('Grupo ', '')) - 1
+                    pat = r['pats'][idx_seleccionado]
                     
-                    fig, ax = plt.subplots(figsize=(11, 6))
+                    fig, ax = plt.subplots(figsize=(12, 7))
                     ax.set_xlim(0, mejor_ancho)
                     ax.set_ylim(0, 66)
                     ax.set_aspect('equal')
@@ -661,20 +649,20 @@ with tab2:
                     # Título con info de combinación
                     alturas_filas = sorted(list(set(p['h'] for p in pat['lay'])))
                     suma_alturas = sum(alturas_filas) + (len(alturas_filas)-1) * KERF_CM
-                    ax.set_title(f"Sección {mejor_ancho}×66 cm | Largo: {pat['m3']:.1f} cm\nCombinación alturas: {' + '.join([f'{h:.1f}' for h in alturas_filas])} = {suma_alturas:.1f} cm", 
-                                fontsize=11, fontweight='bold')
+                    ax.set_title(f"Grupo {idx_seleccionado+1}: Sección {mejor_ancho}×66 cm | Largo: {pat['m3']:.1f} cm\nCombinación alturas: {' + '.join([f'{h:.1f}' for h in alturas_filas])} = {suma_alturas:.1f} cm de 66 cm", 
+                                fontsize=12, fontweight='bold')
                     
                     # Dibujar piezas
                     for p in pat['lay']:
                         ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], 
-                                                       fc=p['color'], ec='white', lw=1.5, alpha=0.9))
+                                                       fc=p['color'], ec='white', lw=2, alpha=0.9))
                         ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], 
-                                ha='center', va='center', c='white', fontweight='bold', fontsize=10)
+                                ha='center', va='center', c='white', fontweight='bold', fontsize=11)
                     
                     # Líneas de separación de filas
                     for info in pat['info_filas']:
                         if info['y_inicio'] > 0:
-                            ax.axhline(y=info['y_inicio'] - KERF_CM/2, color='yellow', linestyle='-', alpha=0.7, lw=2)
+                            ax.axhline(y=info['y_inicio'] - KERF_CM/2, color='yellow', linestyle='-', alpha=0.8, lw=2.5)
                     
                     plt.tight_layout()
                     st.pyplot(fig)
@@ -687,4 +675,4 @@ with tab2:
                 st.warning("⚠️ No se encontró una mezcla válida con los parámetros actuales.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v19.0 | Mix con combinaciones inteligentes y visualización clara de todos los grupos.*")
+st.caption("💡 *Covintec v20.0 | Mix Global: Todos los grupos visibles, mezcla real, optimización ~100%.*")
