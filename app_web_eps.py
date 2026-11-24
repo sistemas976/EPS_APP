@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v22.0 - MIX FFDH CON DIVISIÓN CORRECTA
-- Divide grupos largos en sub-segmentos que quepan en 506 cm.
-- Distribuye sub-segmentos en bloques sin exceder 506 cm.
-- Conteo de piezas correcto por segmento.
-- Visualización correcta al cambiar de bloque.
+📦 CALCULADOR EPS WEB v23.0 - MIX ROBUSTO (FIX selectbox + conteo exacto)
+- FIX 1: selectbox con índices numéricos + format_func (elimina ValueError al cambiar segmento)
+- FIX 2: conteo exacto de piezas por sub-segmento (sin sobreproducción)
+- FIX 3: volumen exacto con capa parcial
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -110,23 +109,16 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v22: FFDH CON DIVISIÓN CORRECTA
+# 🔄 MOTOR MIX v23: FFDH + CONTEO EXACTO
 # ==========================================
 def _ffdh_nesting(ancho, alto, piezas):
-    """
-    First Fit Decreasing Height: coloca piezas en la sección 66×ancho.
-    Retorna el layout de UNA CAPA (patrón transversal).
-    """
     if not piezas: return []
     expandidas = []
     for p in piezas:
         for _ in range(p['qty']):
             expandidas.append({'w': p['w'], 'h': p['h'], 'id': p['id'], 'color': p['color'], 'm3': p['m3']})
     expandidas.sort(key=lambda x: max(x['w'], x['h']), reverse=True)
-
-    shelves = []
-    layout = []
-
+    shelves, layout = [], []
     for pieza in expandidas:
         colocada = False
         orientaciones = sorted([(pieza['w'], pieza['h']), (pieza['h'], pieza['w'])], key=lambda o: o[1])
@@ -152,46 +144,30 @@ def _ffdh_nesting(ancho, alto, piezas):
     return layout
 
 def _distribuir_en_bloques(grupos, ancho):
-    """
-    Distribuye grupos en bloques de 506 cm.
-    Divide grupos largos en sub-segmentos que quepan en 506 cm.
-    """
-    # Paso 1: Para cada grupo, calcular layout y dividir en sub-segmentos
+    """Divide grupos en sub-segmentos con CONTEO EXACTO de piezas."""
     sub_segmentos = []
     for m3, piezas in grupos.items():
         layout = _ffdh_nesting(ancho, ALTO_BLOQUE, piezas)
         if not layout: continue
-        
-        piezas_por_capa = len(layout)
+        ppc = len(layout)  # piezas por capa (patrón)
         qty_total = sum(p['qty'] for p in piezas)
-        if piezas_por_capa == 0: continue
-        
-        # Capas totales necesarias para este grupo
-        capas_totales = math.ceil(qty_total / piezas_por_capa)
-        
-        # Capas que caben en un segmento de 506 cm
-        capas_por_segmento = int(LARGO_BLOQUE // (m3 + KERF_CM))
-        if capas_por_segmento == 0: continue
-        
-        # Dividir en sub-segmentos
-        capas_restantes = capas_totales
-        while capas_restantes > 0:
-            capas_este = min(capas_restantes, capas_por_segmento)
-            longitud_este = capas_este * (m3 + KERF_CM)
+        if ppc == 0: continue
+        capas_max_segmento = int(LARGO_BLOQUE // (m3 + KERF_CM))
+        if capas_max_segmento == 0: continue
+
+        piezas_restantes = qty_total
+        while piezas_restantes > 0:
+            capas_necesarias = math.ceil(piezas_restantes / ppc)
+            capas_este = min(capas_max_segmento, capas_necesarias)
+            piezas_este = min(ppc * capas_este, piezas_restantes)
             sub_segmentos.append({
-                'm3': m3,
-                'layout': layout,  # Mismo patrón transversal
-                'piezas_por_capa': piezas_por_capa,
-                'capas': capas_este,
-                'long': longitud_este,
-                'color': piezas[0]['color']
+                'm3': m3, 'layout': layout, 'piezas_por_capa': ppc,
+                'capas': capas_este, 'piezas_en_segmento': piezas_este,
+                'long': capas_este * (m3 + KERF_CM), 'color': piezas[0]['color']
             })
-            capas_restantes -= capas_este
-    
-    # Paso 2: Ordenar sub-segmentos por longitud (de mayor a menor) - FFD
+            piezas_restantes -= piezas_este
+
     sub_segmentos.sort(key=lambda x: x['long'], reverse=True)
-    
-    # Paso 3: First Fit Decreasing - distribuir en bloques
     bloques = []
     for seg in sub_segmentos:
         colocado = False
@@ -203,15 +179,12 @@ def _distribuir_en_bloques(grupos, ancho):
                 break
         if not colocado:
             bloques.append({'segmentos': [seg], 'usado': seg['long']})
-    
     return bloques
 
 def _calcular_kerf_bloque(segmentos, ancho):
     vol = 0.0
     for s in segmentos:
-        m3 = s['m3']
-        capas = s['capas']
-        lay = s['layout']
+        m3, capas, lay = s['m3'], s['capas'], s['layout']
         if capas > 1:
             vol += (capas - 1) * ancho * ALTO_BLOQUE * KERF_CM
         ys = sorted(set(p['y'] for p in lay))
@@ -224,52 +197,46 @@ def _calcular_kerf_bloque(segmentos, ancho):
     return vol / 1e6
 
 def _volumen_piezas_segmento(s):
-    """Volumen de UN segmento (layout × capas × m3)"""
-    vol_una_capa = sum(p['w'] * p['h'] * s['m3'] for p in s['layout'])
-    return vol_una_capa * s['capas'] / 1e6
+    """Volumen EXACTO con capa parcial."""
+    vol_capa = sum(p['w'] * p['h'] * s['m3'] for p in s['layout']) / 1e6
+    ppc = s['piezas_por_capa']
+    piezas = s['piezas_en_segmento']
+    capas_completas = piezas // ppc
+    piezas_parciales = piezas % ppc
+    vol = vol_capa * capas_completas
+    if piezas_parciales > 0:
+        vol += sum(p['w'] * p['h'] * s['m3'] for p in s['layout'][:piezas_parciales]) / 1e6
+    return vol
 
 def _graficar_longitudinal_bloque(bloque, ancho, num_bloque, total_bloques):
     fig, ax = plt.subplots(figsize=(15, 3.5))
-    ax.set_xlim(0, LARGO_BLOQUE)
-    ax.set_ylim(-1, 11)
-    ax.axis('off')
+    ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(-1, 11); ax.axis('off')
     ax.add_patch(patches.Rectangle((0, 0), LARGO_BLOQUE, 10, facecolor='#F0F2F6', edgecolor='#333', lw=2))
-
     x = 0
     for s in bloque['segmentos']:
-        m3 = s['m3']
-        capas = s['capas']
-        lay = s['layout']
+        m3, capas, lay = s['m3'], s['capas'], s['layout']
         modelos = sorted(set(p['id'] for p in lay))
-        color = s['color']
         largo_seg = capas * (m3 + KERF_CM)
-        
-        ax.add_patch(patches.Rectangle((x, 0), largo_seg, 10, facecolor=color, alpha=0.85, edgecolor='white', lw=2))
-        label = f"{', '.join(modelos)}\n{m3:.1f}cm ×{capas}"
-        fs = 9 if largo_seg > 60 else 7
-        ax.text(x + largo_seg/2, 5, label, ha='center', va='center', fontsize=fs, fontweight='bold', color='white')
+        ax.add_patch(patches.Rectangle((x, 0), largo_seg, 10, facecolor=s['color'], alpha=0.85, edgecolor='white', lw=2))
+        ax.text(x + largo_seg/2, 5, f"{', '.join(modelos)}\n{m3:.1f}cm x{capas}", ha='center', va='center',
+                fontsize=9 if largo_seg > 60 else 7, fontweight='bold', color='white')
         for c in range(1, capas):
             ax.plot([x + c*(m3+KERF_CM), x + c*(m3+KERF_CM)], [0, 10], color='white', ls='--', alpha=0.7)
         x += largo_seg
-
     if x < LARGO_BLOQUE - 0.5:
         res = LARGO_BLOQUE - x
         ax.add_patch(patches.Rectangle((x, 0), res, 10, facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.7, lw=2))
         ax.text(x + res/2, 5, f"RESIDUO\n{res:.1f} cm", ha='center', va='center', fontsize=10, color='#C0392B', fontweight='bold')
-
-    ax.set_xticks([0, 100, 200, 300, 400, 506])
-    ax.tick_params(axis='x', colors='gray', labelsize=8)
-    ax.set_title(f"BLOQUE {num_bloque}/{total_bloques} — Ancho {ancho} cm | Usados {x:.1f} cm de 506 cm",
+    ax.set_xticks([0, 100, 200, 300, 400, 506]); ax.tick_params(axis='x', colors='gray', labelsize=8)
+    ax.set_title(f"BLOQUE {num_bloque}/{total_bloques} - Ancho {ancho} cm | Usados {x:.1f} cm de 506 cm",
                  fontsize=12, fontweight='bold', pad=8)
-    plt.tight_layout()
-    return fig
+    plt.tight_layout(); return fig
 
 def _graficar_transversal_segmento(s, ancho):
     fig, ax = plt.subplots(figsize=(11, 5.5))
-    ax.set_xlim(0, ancho); ax.set_ylim(0, ALTO_BLOQUE)
-    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.4)
+    ax.set_xlim(0, ancho); ax.set_ylim(0, ALTO_BLOQUE); ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.4)
     modelos = sorted(set(p['id'] for p in s['layout']))
-    ax.set_title(f"Sección 66×{ancho} cm | Largo {s['m3']:.1f} cm | {s['capas']} capas | {len(s['layout'])} pz/capa | Total: {len(s['layout'])*s['capas']} pz",
+    ax.set_title(f"Seccion 66x{ancho} cm | Largo {s['m3']:.1f} cm | {s['capas']} capas | Patron: {len(s['layout'])} pz/capa | Total: {s['piezas_en_segmento']} pz",
                  fontsize=11, fontweight='bold')
     for p in s['layout']:
         ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], fc=p['color'], ec='white', lw=1.5, alpha=0.92))
@@ -278,17 +245,16 @@ def _graficar_transversal_segmento(s, ancho):
     max_y = max((p['y']+p['h'] for p in s['layout']), default=0)
     if max_y < ALTO_BLOQUE - 0.5:
         ax.add_patch(patches.Rectangle((0, max_y), ancho, ALTO_BLOQUE-max_y, fc='#EAECEE', ec='#999', hatch='//', alpha=0.5))
-        ax.text(ancho/2, max_y + (ALTO_BLOQUE-max_y)/2, f"Espacio vacío: {ALTO_BLOQUE-max_y:.1f} cm de alto",
+        ax.text(ancho/2, max_y + (ALTO_BLOQUE-max_y)/2, f"Espacio vacio: {ALTO_BLOQUE-max_y:.1f} cm de alto",
                 ha='center', va='center', fontsize=9, color='#555', style='italic')
     ax.set_xlabel("Ancho (cm)"); ax.set_ylabel("Alto (cm)")
-    plt.tight_layout()
-    return fig
+    plt.tight_layout(); return fig
 
 # ==========================================
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix FFDH v22.0")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Robusto v23.0")
 
 tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Nesting FFDH)"])
 
@@ -348,7 +314,7 @@ with tab1:
 
 with tab2:
     st.header("🔀 Optimización de Mezcla (Nesting FFDH)")
-    st.markdown("🔹 Mezcla **todos los modelos** que comparten largo en una sola sección 66×Ancho. 🔹 Divide automáticamente grupos largos en sub-segmentos. 🔹 Distribuye en múltiples bloques de 506 cm.")
+    st.markdown("🔹 Mezcla modelos con el mismo largo en una sección 66×Ancho. 🔹 Divide grupos largos en sub-segmentos ≤506 cm. 🔹 Conteo exacto de piezas.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -386,7 +352,7 @@ with tab2:
                 "qty": st.column_config.NumberColumn("Cantidad", format="%d", step=1, width="small"),
                 "color": st.column_config.TextColumn("Color Hex", width="small")
             },
-            hide_index=True, num_rows="dynamic", use_container_width=True, key="editor_mix_v22"
+            hide_index=True, num_rows="dynamic", use_container_width=True, key="editor_mix_v23"
         )
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
@@ -410,10 +376,9 @@ with tab2:
             if not bloques:
                 st.warning("⚠️ No hay piezas válidas para optimizar."); st.stop()
 
-            # Calcular totales
             total_piezas_pedidas = sum(p['qty'] for g in grupos.values() for p in g)
-            total_piezas_colocadas = sum(s['piezas_por_capa'] * s['capas'] for b in bloques for s in b['segmentos'])
-            st.success(f"✅ **{len(bloques)} bloque(s)** necesarios | {total_piezas_colocadas}/{total_piezas_pedidas} piezas colocadas")
+            total_piezas_colocadas = sum(s['piezas_en_segmento'] for b in bloques for s in b['segmentos'])
+            st.success(f"✅ **{len(bloques)} bloque(s)** | {total_piezas_colocadas}/{total_piezas_pedidas} piezas colocadas")
 
             vol_total_piezas = sum(_volumen_piezas_segmento(s) for b in bloques for s in b['segmentos'])
             vol_total_bloques = len(bloques) * (ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6)
@@ -425,21 +390,18 @@ with tab2:
             c4.metric("🧱 Peso Neto", f"{vol_total_piezas * densidad_mix:.2f} kg")
 
             if ef_global < 40:
-                st.warning(f"⚠️ **Eficiencia baja ({ef_global:.1f}%)**: tus cantidades son pequeñas para llenar bloques de 506 cm. "
-                           f"Para acercarte al 100% necesitas agrupar pedidos de varios días o aumentar cantidades por modelo.")
+                st.warning(f"⚠️ **Eficiencia baja ({ef_global:.1f}%)**: cantidades pequeñas para llenar bloques de 506 cm. "
+                           f"Agrupa pedidos de varios días o aumenta cantidades por modelo.")
 
-            # Selector de bloque
             if len(bloques) > 1:
                 num_b = st.radio("Ver bloque:", list(range(1, len(bloques)+1)), horizontal=True, key="sel_bloque")
             else:
                 num_b = 1
             bloque = bloques[num_b-1]
 
-            # Vista longitudinal del bloque seleccionado
             st.subheader(f"📏 Bloque {num_b} — Vista Longitudinal (506 cm)")
             st.pyplot(_graficar_longitudinal_bloque(bloque, ancho_mix, num_b, len(bloques)))
 
-            # Métricas del bloque seleccionado
             vk = _calcular_kerf_bloque(bloque['segmentos'], ancho_mix)
             vseg = sum(_volumen_piezas_segmento(s) for s in bloque['segmentos'])
             vb = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
@@ -456,33 +418,28 @@ with tab2:
             st.markdown(f"⬜ **Restante Físico:** `{pr:.2f}%` → `{vr:.4f} m³` → `{vr*densidad_mix:.2f} kg`"); st.progress(min(1.0, pr/100))
             st.success(f"✅ **Verificación:** {vn:.4f}+{vpr:.4f}+{vk:.4f}+{vr:.4f} ≈ `{vb:.4f} m³`")
 
-            # Tabla de segmentos del bloque seleccionado
             st.markdown("#### 📋 Segmentos de este bloque")
             datos = []
             for i, s in enumerate(bloque['segmentos']):
                 modelos = ', '.join(sorted(set(p['id'] for p in s['layout'])))
-                total_pz = s['piezas_por_capa'] * s['capas']
                 datos.append({
-                    '#': i+1,
-                    'Largo (cm)': f"{s['m3']:.1f}",
-                    'Modelos': modelos,
-                    'Pz/capa': s['piezas_por_capa'],
-                    'Capas': s['capas'],
-                    'Total Pz': total_pz,
-                    'Longitud (cm)': f"{s['long']:.1f}"
+                    '#': i+1, 'Largo (cm)': f"{s['m3']:.1f}", 'Modelos': modelos,
+                    'Pz/capa': s['piezas_por_capa'], 'Capas': s['capas'],
+                    'Total Pz': s['piezas_en_segmento'], 'Longitud (cm)': f"{s['long']:.1f}"
                 })
             st.table(datos)
 
-            # Selector de segmento para ver transversal
             st.subheader("🔍 Vista Transversal por Segmento")
-            nombres = [f"Segmento {i+1}: {', '.join(sorted(set(p['id'] for p in s['layout'])))} — largo {s['m3']:.1f} cm ({s['piezas_por_capa']*s['capas']} pz)"
-                       for i, s in enumerate(bloque['segmentos'])]
-            if nombres:
-                sel = st.selectbox("Elige segmento:", nombres, key=f"sel_seg_b{num_b}")
-                idx = nombres.index(sel)
-                st.pyplot(_graficar_transversal_segmento(bloque['segmentos'][idx], ancho_mix))
+            if bloque['segmentos']:
+                # ✅ FIX: índices numéricos + format_func (elimina ValueError al cambiar segmento)
+                nombres = [f"Segmento {i+1}: {', '.join(sorted(set(p['id'] for p in s['layout'])))} | largo {s['m3']:.1f} cm | {s['piezas_en_segmento']} pz"
+                           for i, s in enumerate(bloque['segmentos'])]
+                idx = st.selectbox("Elige segmento:", range(len(bloque['segmentos'])),
+                                   format_func=lambda i: nombres[i], key=f"sel_seg_b{num_b}")
+                seg = bloque['segmentos'][idx]
+                st.pyplot(_graficar_transversal_segmento(seg, ancho_mix))
             else:
                 st.info("Este bloque no tiene segmentos.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v22.0 | FFDH con división correcta de grupos largos en sub-segmentos de ≤506 cm.*")
+st.caption("💡 *Covintec v23.0 | FIX: selectbox robusto con índices + conteo exacto de piezas por sub-segmento.*")
