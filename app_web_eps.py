@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v17.5 - MIX MEJORADO CON SHELF PACKING
-- Tabla de pedidos estable (no requiere múltiples enters).
-- Algoritmo Shelf Packing: piezas con misma altura se alinean en filas.
-- Mezcla real de modelos dentro de cada grupo de largo.
-- Modo Single INTACTO.
+📦 CALCULADOR EPS WEB v18.0 - MIX CON COMBINACIONES INTELIGENTES
+- Algoritmo de combinaciones que busca sumar ~66 cm en altura
+- Permite cortes "entero + medio" (rearme)
+- Optimiza para ~100% de aprovechamiento
+- Decimales funcionales en la tabla
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -13,6 +13,7 @@ import matplotlib.patches as patches
 import math
 import io
 from collections import defaultdict
+from itertools import combinations
 
 KERF_CM = 0.2
 st.set_page_config(page_title="📦 Calculador EPS Covintec", layout="wide")
@@ -123,101 +124,123 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX MEJORADO - SHELF PACKING
+# 🔄 MOTOR MIX CON COMBINACIONES INTELIGENTES
 # ==========================================
-def _shelf_nesting(ancho_bloque, alto_bloque, items_disponibles):
+def _encontrar_combinaciones_filas(items, alto_max=66.0):
     """
-    Algoritmo Shelf Packing: Agrupa piezas por altura para alinear cortes.
-    Las piezas con la misma altura se colocan en la misma fila (estante).
+    Encuentra combinaciones de piezas que sumen ~alto_max (66 cm)
+    Retorna lista de filas óptimas
     """
-    if not items_disponibles:
+    # Agrupar por altura disponible
+    alturas_disponibles = set()
+    for item in items:
+        alturas_disponibles.add(item['h'])
+        alturas_disponibles.add(item['w'])  # Rotación
+    
+    alturas_disponibles = sorted(alturas_disponibles)
+    
+    # Buscar combinaciones que sumen cercano a alto_max
+    mejores_combinaciones = []
+    
+    # Probar combinaciones de 1, 2, 3 piezas de altura
+    for r in range(1, 4):
+        for combo in combinations(alturas_disponibles, r):
+            suma = sum(combo) + (r-1) * KERF_CM
+            if suma <= alto_max + 0.01:
+                desperdicio = alto_max - suma
+                mejores_combinaciones.append({
+                    'alturas': combo,
+                    'suma': suma,
+                    'desperdicio': desperdicio,
+                    'eficiencia': (suma / alto_max) * 100
+                })
+    
+    # Ordenar por eficiencia (mayor a menor)
+    mejores_combinaciones.sort(key=lambda x: x['eficiencia'], reverse=True)
+    
+    return mejores_combinaciones[:10]  # Top 10
+
+def _armar_seccion_optimizada(ancho_bloque, alto_bloque, items_grupo):
+    """
+    Arma la sección transversal óptima combinando piezas
+    """
+    if not items_grupo:
         return [], 0
     
-    # Agrupar piezas por altura (dimensión Y)
-    # Para cada pieza, probamos ambas orientaciones y elegimos la que mejor se alinee
-    shelves = defaultdict(list)  # {altura: [piezas]}
+    # Encontrar mejores combinaciones de altura
+    combinaciones = _encontrar_combinaciones_filas(items_grupo, alto_bloque)
     
-    for item in items_disponibles:
-        # Intentar orientación normal (w, h)
-        h_normal = item['h']
-        w_normal = item['w']
-        
-        # Intentar orientación rotada (h, w)
-        h_rotada = item['w']
-        w_rotada = item['h']
-        
-        # Elegir la orientación que mejor se alinee con estantes existentes
-        # Priorizar alturas que ya existan en shelves
-        if h_normal in shelves:
-            shelves[h_normal].append({'w': w_normal, 'h': h_normal, 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
-        elif h_rotada in shelves:
-            shelves[h_rotada].append({'w': w_rotada, 'h': h_rotada, 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
-        else:
-            # Crear nuevo estante con la orientación de mayor área
-            if h_normal * w_normal >= h_rotada * w_rotada:
-                shelves[h_normal].append({'w': w_normal, 'h': h_normal, 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
-            else:
-                shelves[h_rotada].append({'w': w_rotada, 'h': h_rotada, 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
+    if not combinaciones:
+        return [], 0
     
-    # Ordenar estantes por altura (de mayor a menor)
-    alturas_ordenadas = sorted(shelves.keys(), reverse=True)
+    # Tomar la mejor combinación
+    mejor_combo = combinaciones[0]
+    alturas_fila = mejor_combo['alturas']
     
-    # Colocar estantes en el bloque
+    # Armar filas con esas alturas
     layout_final = []
     y_pos = 0
     area_total = 0
     
-    for altura in alturas_ordenadas:
-        piezas_en_estante = shelves[altura]
+    for altura_objetivo in alturas_fila:
+        # Filtrar piezas que tengan esa altura (normal o rotada)
+        piezas_compatibles = []
+        for item in items_grupo:
+            if abs(item['h'] - altura_objetivo) < 0.01:
+                piezas_compatibles.append({'w': item['w'], 'h': item['h'], 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
+            elif abs(item['w'] - altura_objetivo) < 0.01:
+                piezas_compatibles.append({'w': item['h'], 'h': item['w'], 'id': item['id'], 'color': item['color'], 'm3': item['m3']})
         
-        # Verificar si cabe el estante
-        if y_pos + altura > alto_bloque:
-            break  # No cabe más estantes
+        if not piezas_compatibles:
+            continue
         
-        # Colocar piezas en el estante (de izquierda a derecha)
+        # Ordenar por ancho (mayor a menor) para mejor empaque
+        piezas_compatibles.sort(key=lambda x: x['w'], reverse=True)
+        
+        # Colocar piezas en la fila
         x_pos = 0
-        for pieza in piezas_en_estante:
+        for pieza in piezas_compatibles:
             if x_pos + pieza['w'] > ancho_bloque:
-                break  # No cabe más piezas en este estante
+                # Verificar si cabe como "mitad" (rearme)
+                espacio_restante = ancho_bloque - x_pos
+                if espacio_restante >= pieza['w'] / 2:
+                    # Colocar mitad
+                    pieza_colocada = {
+                        'x': x_pos, 'y': y_pos,
+                        'w': espacio_restante, 'h': pieza['h'],
+                        'id': f"{pieza['id']}½", 'color': pieza['color'], 'm3': pieza['m3'],
+                        'es_mitad': True
+                    }
+                    layout_final.append(pieza_colocada)
+                    area_total += espacio_restante * pieza['h']
+                break
             
-            # Colocar pieza
             pieza_colocada = {
-                'x': x_pos,
-                'y': y_pos,
-                'w': pieza['w'],
-                'h': pieza['h'],
-                'id': pieza['id'],
-                'color': pieza['color'],
-                'm3': pieza['m3']
+                'x': x_pos, 'y': y_pos,
+                'w': pieza['w'], 'h': pieza['h'],
+                'id': pieza['id'], 'color': pieza['color'], 'm3': pieza['m3'],
+                'es_mitad': False
             }
             layout_final.append(pieza_colocada)
             area_total += pieza['w'] * pieza['h']
             x_pos += pieza['w'] + KERF_CM
         
-        # Avanzar al siguiente estante
-        y_pos += altura + KERF_CM
+        y_pos += altura_objetivo + KERF_CM
     
     return layout_final, area_total
 
 def _calcular_kerf_mix(grupos, ancho, alto, kerf):
-    """Calcula volumen exacto de kerf para layouts mixtos"""
     vol_kerf = 0.0
     for g in grupos:
-        m3 = g['m3']
-        capas = g['capas']
-        lay = g['lay']
-        
+        m3, capas, lay = g['m3'], g['capas'], g['lay']
         if capas > 1:
             vol_kerf += (capas - 1) * ancho * alto * kerf
-            
         vol_cortes_cara = len(lay) * m3 * kerf * 1.5
         vol_kerf += vol_cortes_cara * capas
-
     return vol_kerf / 1_000_000
 
 def _graficar_mix_longitudinal(pats):
-    """Genera el gráfico de línea de tiempo para el modo Mix"""
-    fig, ax = plt.subplots(figsize=(12, 2.5))
+    fig, ax = plt.subplots(figsize=(14, 3))
     ax.set_xlim(0, 506)
     ax.set_ylim(0, 10)
     ax.axis('off')
@@ -226,27 +249,25 @@ def _graficar_mix_longitudinal(pats):
     ax.add_patch(patches.Rectangle((0, 0), 506, 10, facecolor='#F0F2F6', edgecolor='#CBD5E1', lw=1))
     
     for p in pats:
-        m3 = p['m3']
-        capas = p['capas']
-        color = p['c']
+        m3, capas, color = p['m3'], p['capas'], p['c']
         id_modelo = p['lay'][0]['id'] if p['lay'] else 'Mix'
-        
         len_grupo = capas * (m3 + KERF_CM)
+        
         ax.add_patch(patches.Rectangle((current_x, 0), len_grupo, 10, facecolor=color, alpha=0.85, edgecolor='white', lw=1))
         ax.text(current_x + len_grupo/2, 5, f"{id_modelo}\n{m3}cm (x{capas})", 
-                ha='center', va='center', fontsize=11, fontweight='bold', color='white')
+                ha='center', va='center', fontsize=10, fontweight='bold', color='white')
         
         for c in range(1, capas):
             cut_pos = current_x + c * (m3 + KERF_CM)
             ax.plot([cut_pos, cut_pos], [0, 10], color='white', linestyle='--', alpha=0.6)
-            
-        current_x += len_grupo
         
+        current_x += len_grupo
+    
     if current_x < 506:
         res = 506 - current_x
         ax.add_patch(patches.Rectangle((current_x, 0), res, 10, facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.6))
         ax.text(current_x + res/2, 5, f"Residuo\n{res:.1f} cm", ha='center', va='center', fontsize=9, color='#C0392B', fontweight='bold')
-        
+    
     ax.set_xticks([0, 100, 200, 300, 400, 506])
     ax.tick_params(axis='x', colors='gray')
     plt.tight_layout()
@@ -256,9 +277,9 @@ def _graficar_mix_longitudinal(pats):
 # 🖥️ INTERFAZ STREAMLIT
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Shelf Packing v17.5")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Combinaciones v18.0")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Nesting Profesional)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Combinaciones Inteligentes)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -324,17 +345,21 @@ with tab1:
                 st.pyplot(_graficar_single(r))
 
 # ==========================================
-# 🔹 MODO MIX - COMPLETAMENTE REESCRITO
+# 🔹 MODO MIX CON COMBINACIONES INTELIGENTES
 # ==========================================
 with tab2:
-    st.header("🔄 Optimización de Mezcla Profesional")
-    st.markdown("🔹 **Shelf Packing**: Piezas con misma altura se alinean en filas para cortes limpios")
+    st.header("🔄 Optimización de Mezcla con Combinaciones")
+    st.markdown("""
+    🔹 **Combinaciones Inteligentes**: Busca piezas que sumen ~66 cm en altura  
+    🔹 **Corte Entero + Medio**: Permite rearme cuando una pieza no cabe completa  
+    🔹 **Optimización ~100%**: Maximiza aprovechamiento del bloque
+    """)
     
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.subheader("⚙️ Configuración Mix")
-        modo_optimo_mix = st.checkbox("🔍 Buscar Ancho Óptimo Mix (126-156)", value=False, help="Prueba todos los anchos y elige el de mayor eficiencia neta real.")
+        modo_optimo_mix = st.checkbox("🔍 Buscar Ancho Óptimo Mix (126-156)", value=False)
         ancho_mix = st.slider("Ancho Bloque (cm)", 126, 156, 140, step=1, key="slider_mix", disabled=modo_optimo_mix)
         densidad_mix = st.selectbox("Densidad EPS (kg/m³)", list(range(7, 20)), index=3, key="densidad_mix")
         
@@ -344,41 +369,47 @@ with tab2:
         if modo_bovedilla_mix: factor_perfilado_mix = st.slider("Pérdida por perfilado (%)", 5.0, 35.0, 20.0, 1.0)
         
         st.markdown("### 📋 Lista de Pedidos")
-        st.caption("💡 Edita directamente en la tabla. Los cambios se guardan automáticamente.")
+        st.caption("💡 **Usa punto (.) para decimales**. Ejemplo: 2.5, 3.5, 44.5")
         
-        # ✅ TABLA ESTABLE: Inicialización solo la primera vez
+        # Datos de prueba con tus medidas
         default_prod = [
-            {'id':'A','m1':50,'m2':30,'m3':40,'qty':15,'color':'#3498DB'},
-            {'id':'B','m1':45,'m2':35,'m3':40,'qty':20,'color':'#2ECC71'},
-            {'id':'C','m1':40,'m2':20,'m3':30,'qty':25,'color':'#E67E22'},
-            {'id':'D','m1':25,'m2':25,'m3':30,'qty':30,'color':'#9B59B6'}
+            {'id':'A','m1':3.5,'m2':34.0,'m3':46.0,'qty':10,'color':'#3498DB'},
+            {'id':'B','m1':2.5,'m2':17.5,'m3':19.0,'qty':20,'color':'#2ECC71'},
+            {'id':'C','m1':2.5,'m2':19.0,'m3':44.5,'qty':15,'color':'#E67E22'},
+            {'id':'D','m1':2.5,'m2':22.5,'m3':44.5,'qty':12,'color':'#9B59B6'},
+            {'id':'E','m1':3.5,'m2':42.0,'m3':54.0,'qty':8,'color':'#F39C12'},
+            {'id':'F','m1':3.5,'m2':39.0,'m3':54.0,'qty':10,'color':'#E74C3C'},
+            {'id':'G','m1':3.5,'m2':34.0,'m3':39.0,'qty':15,'color':'#1ABC9C'},
+            {'id':'H','m1':2.5,'m2':30.5,'m3':33.0,'qty':18,'color':'#34495E'},
+            {'id':'I','m1':2.5,'m2':30.5,'m3':50.0,'qty':12,'color':'#95A5A6'},
+            {'id':'J','m1':2.5,'m2':36.0,'m3':50.0,'qty':10,'color':'#D35400'},
+            {'id':'K','m1':2.5,'m2':33.0,'m3':50.0,'qty':14,'color':'#8E44AD'}
         ]
         
         if 'prod_mix' not in st.session_state:
             st.session_state['prod_mix'] = default_prod
         
-        # ✅ EDITOR CON KEY FIJA Y ESTABLE
+        # Editor con soporte para decimales
         edited_df = st.data_editor(
             st.session_state['prod_mix'],
             column_config={
-                "id": "ID",
-                "m1": "M1 (cm)",
-                "m2": "M2 (cm)",
-                "m3": "M3 (Largo cm)",
-                "qty": "Cantidad",
-                "color": st.column_config.TextColumn("Color Hex")
+                "id": st.column_config.TextColumn("ID", width="small"),
+                "m1": st.column_config.NumberColumn("M1 (cm)", format="%.2f", step=0.5, width="small"),
+                "m2": st.column_config.NumberColumn("M2 (cm)", format="%.2f", step=0.5, width="small"),
+                "m3": st.column_config.NumberColumn("M3 Largo (cm)", format="%.1f", step=0.5, width="small"),
+                "qty": st.column_config.NumberColumn("Cantidad", format="%d", step=1, width="small"),
+                "color": st.column_config.TextColumn("Color Hex", width="small")
             },
             hide_index=True,
             num_rows="dynamic",
             use_container_width=True,
-            key="editor_mix_tabla"  # ✅ Key fija y única
+            key="editor_mix_combinaciones"
         )
         
-        # Actualizar estado solo si hay cambios reales
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
         
-        calc_mix = st.button("🚀 Optimizar Mezcla", type="primary", use_container_width=True)
+        calc_mix = st.button("🚀 Optimizar con Combinaciones", type="primary", use_container_width=True)
 
     with col2:
         if calc_mix:
@@ -411,7 +442,7 @@ with tab2:
             for item in pool:
                 groups[item['m3']].append(item)
             
-            # Optimizador de ancho
+            # Optimizador
             anchos_a_probar = range(126, 157) if modo_optimo_mix else [ancho_mix]
             mejor_res, mejor_ancho, mejor_ef = None, None, -1
             
@@ -420,8 +451,8 @@ with tab2:
                 longitud_usada = 0.0
                 
                 for m3, grp in sorted(groups.items(), reverse=True):
-                    # ✅ SHELF PACKING: Mezcla real con alineación
-                    lay, area = _shelf_nesting(a, 66.0, grp)
+                    # Combinaciones inteligentes
+                    lay, area = _armar_seccion_optimizada(a, 66.0, grp)
                     
                     if not lay:
                         continue
@@ -514,35 +545,52 @@ with tab2:
                 # VISTA TRANSVERSAL DETALLADA
                 st.subheader("🔍 Vista Transversal Detallada")
                 if r['pats']:
-                    opciones = [f"Largo {p['m3']:.0f} cm ({p['tg']} pz)" for p in r['pats']]
-                    sel = st.selectbox("Ver sección de:", opciones, key="sel_seccion_mix_v2")
+                    opciones = [f"Largo {p['m3']:.1f} cm ({p['tg']} pz)" for p in r['pats']]
+                    sel = st.selectbox("Ver sección de:", opciones, key="sel_seccion_mix_v4")
                     m3_seleccionado = float(sel.split()[1])
                     pat = r['pats'][[p['m3'] for p in r['pats']].index(m3_seleccionado)]
                     
-                    fig, ax = plt.subplots(figsize=(9, 4))
+                    fig, ax = plt.subplots(figsize=(10, 5))
                     ax.set_xlim(0, mejor_ancho)
                     ax.set_ylim(0, 66)
                     ax.set_aspect('equal')
                     ax.grid(ls=':', alpha=0.5)
-                    ax.set_title(f"Sección {mejor_ancho}×66 cm | Largo: {pat['m3']:.0f} cm", fontsize=12, fontweight='bold')
+                    ax.set_title(f"Sección {mejor_ancho}×66 cm | Largo: {pat['m3']:.1f} cm", fontsize=12, fontweight='bold')
                     
                     for p in pat['lay']:
+                        color = p['color']
+                        if p.get('es_mitad', False):
+                            color = '#FF6B6B'  # Rojo para mitades
+                        
                         ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], 
-                                                       fc=p['color'], ec='white', lw=1.5, alpha=0.9))
-                        ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], 
-                                ha='center', va='center', c='white', fontweight='bold', fontsize=10)
+                                                       fc=color, ec='white', lw=1.5, alpha=0.9))
+                        
+                        # Texto con indicador de mitad
+                        texto = p['id']
+                        if p.get('es_mitad', False):
+                            texto += "½"
+                        
+                        ax.text(p['x']+p['w']/2, p['y']+p['h']/2, texto, 
+                                ha='center', va='center', c='white', fontweight='bold', fontsize=9)
                     
                     plt.tight_layout()
                     st.pyplot(fig)
                     
-                    # Información de alineación
-                    alturas_unicas = sorted(list(set(p['h'] for p in pat['lay'])))
-                    if len(alturas_unicas) > 1:
-                        st.info(f"📐 **Alineación detectada:** {len(alturas_unicas)} filas con alturas {[f'{h:.0f}cm' for h in alturas_unicas]}")
+                    # Información detallada de combinaciones
+                    alturas_fila = sorted(list(set(p['h'] for p in pat['lay'])))
+                    modelos_en_seccion = sorted(list(set(p['id'].replace('½','') for p in pat['lay'])))
+                    
+                    st.info(f"📐 **Modelos en sección:** {', '.join(modelos_en_seccion)}")
+                    st.info(f"📏 **Combinación de alturas:** {' + '.join([f'{h:.1f}cm' for h in alturas_fila])} = {sum(alturas_fila) + (len(alturas_fila)-1)*KERF_CM:.1f} cm de 66 cm")
+                    
+                    # Verificar si hay mitades
+                    hay_mitades = any(p.get('es_mitad', False) for p in pat['lay'])
+                    if hay_mitades:
+                        st.warning("⚠️ **Incluye piezas rearmadas (mitades)**: Requieren corte y unión")
                     else:
-                        st.success(f"✅ **Corte uniforme:** Todas las piezas tienen {alturas_unicas[0]:.0f} cm de altura")
+                        st.success("✅ **Todas las piezas son enteras**: Corte directo sin rearme")
             else:
                 st.warning("⚠️ No se encontró una mezcla válida con los parámetros actuales.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v17.5 | Mix con Shelf Packing: Alineación automática de piezas con misma altura.*")
+st.caption("💡 *Covintec v18.0 | Mix con Combinaciones Inteligentes: Busca sumar ~66 cm en altura + permite rearme.*")
