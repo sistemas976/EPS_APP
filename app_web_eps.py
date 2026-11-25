@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v27.1 - OPTIMIZADO PARA RENDIMIENTO
-- DPI reducido (72 en lugar de 130)
-- PDF resumido: 5 filetes por bloque + tabla del resto
-- Algoritmo con heap (más rápido)
-- Progress bar para feedback
-- Tiempo estimado: 15-30 segundos en lugar de 2 minutos
+📦 CALCULADOR EPS WEB v27.2 - COMPLETO Y OPTIMIZADO
+- Fix TypeError en heapq con contador único
+- Algoritmo de mezcla real (alterna tipos de piezas)
+- PDF optimizado (DPI 72, 5 filetes por bloque)
+- Progress bar y feedback visual
+- Tiempo estimado: 15-30 segundos
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -120,7 +120,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v27.1: OPTIMIZADO
+# 🔄 MOTOR MIX v27.2: MEZCLA REAL + OPTIMIZADO
 # ==========================================
 class Space3D:
     __slots__ = ('x','y','z','w','h','d','vol')
@@ -134,26 +134,32 @@ def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
     dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
-def _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d):
+def _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d):
     """
-    Versión optimizada con heap y límite de espacios.
+    Algoritmo de mezcla real: alterna entre tipos de piezas para llenar huecos.
+    Fix: contador único en heapq para evitar TypeError.
     """
     placed = []
-    # Heap: (-volumen, espacio) para obtener el más grande en O(log n)
-    spaces_heap = [(-block_w*block_h*block_d, Space3D(0, 0, 0, block_w, block_h, block_d))]
+    counter = 0  # ✅ Contador único para desempate
+    
+    # Heap: (-volumen, contador, espacio)
+    spaces_heap = [(-block_w*block_h*block_d, counter, Space3D(0, 0, 0, block_w, block_h, block_d))]
+    counter += 1
     
     tipo_actual = 0
-    max_intentos = 300  # Reducido de 500
+    max_intentos = 300
     intentos = 0
-    MAX_SPACES = 50  # Reducido de 80
+    MAX_SPACES = 50
     
     while spaces_heap and intentos < max_intentos:
         intentos += 1
         
+        # Encontrar tipos con piezas pendientes
         tipos_con_pendientes = [i for i, item in enumerate(items_pendientes) if item['pendientes'] > 0]
         if not tipos_con_pendientes:
             break
         
+        # Rotar entre tipos para mezcla equilibrada
         tipo_actual = tipos_con_pendientes[tipo_actual % len(tipos_con_pendientes)]
         item = items_pendientes[tipo_actual]
         
@@ -161,22 +167,22 @@ def _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d):
             tipo_actual += 1
             continue
         
-        # Obtener el espacio más grande del heap
         best_space_idx = -1
         best_orient = None
         best_score = float('inf')
         
         orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
         
-        # Solo probar los top-20 espacios del heap (no todos)
+        # Probar top-20 espacios del heap
         espacios_a_probar = min(20, len(spaces_heap))
         temp_spaces = []
         
         for _ in range(espacios_a_probar):
             if not spaces_heap:
                 break
-            neg_vol, space = heapq.heappop(spaces_heap)
-            temp_spaces.append((neg_vol, space))
+            # ✅ Desempaquetar 3 elementos (volumen, contador, espacio)
+            neg_vol, cnt, space = heapq.heappop(spaces_heap)
+            temp_spaces.append((neg_vol, cnt, space))
             
             for orient in orientaciones:
                 pw, ph, pd = orient
@@ -188,16 +194,15 @@ def _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d):
                         best_orient = orient
         
         # Devolver espacios no usados al heap
-        for idx, (neg_vol, space) in enumerate(temp_spaces):
+        for idx, (neg_vol, cnt, space) in enumerate(temp_spaces):
             if idx != best_space_idx:
-                heapq.heappush(spaces_heap, (neg_vol, space))
+                heapq.heappush(spaces_heap, (neg_vol, cnt, space))
         
         if best_space_idx == -1:
             tipo_actual += 1
             continue
         
-        # Usar el mejor espacio
-        _, space = temp_spaces[best_space_idx]
+        _, _, space = temp_spaces[best_space_idx]
         pw, ph, pd = best_orient
         
         placed.append({
@@ -207,19 +212,22 @@ def _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d):
         })
         item['pendientes'] -= 1
         
-        # Dividir espacio restante
+        # Dividir espacio restante (Guillotina sin solapamiento)
         rem_w = space.w - pw - KERF_CM
         if rem_w > 2:
             new_space = Space3D(space.x + pw + KERF_CM, space.y, space.z, rem_w, space.h, space.d)
-            heapq.heappush(spaces_heap, (-new_space.vol, new_space))
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
+            counter += 1
         rem_h = space.h - ph - KERF_CM
         if rem_h > 2:
             new_space = Space3D(space.x, space.y + ph + KERF_CM, space.z, pw, rem_h, space.d)
-            heapq.heappush(spaces_heap, (-new_space.vol, new_space))
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
+            counter += 1
         rem_d = space.d - pd - KERF_CM
         if rem_d > 2:
             new_space = Space3D(space.x, space.y, space.z + pd + KERF_CM, pw, ph, rem_d)
-            heapq.heappush(spaces_heap, (-new_space.vol, new_space))
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
+            counter += 1
         
         # Limitar tamaño del heap
         if len(spaces_heap) > MAX_SPACES:
@@ -231,9 +239,7 @@ def _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d):
     return placed
 
 def _distribuir_en_multiples_bloques(items_list, block_w, block_h, block_d, progress_callback=None):
-    """
-    Distribuye piezas en múltiples bloques con callback de progreso.
-    """
+    """Distribuye piezas en múltiples bloques con mezcla real."""
     items_pendientes = []
     for item in items_list:
         items_pendientes.append({
@@ -248,7 +254,7 @@ def _distribuir_en_multiples_bloques(items_list, block_w, block_h, block_d, prog
     piezas_colocadas = 0
     
     while any(item['pendientes'] > 0 for item in items_pendientes):
-        placed = _llenar_un_bloque_optimizado(items_pendientes, block_w, block_h, block_d)
+        placed = _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d)
         
         if not placed:
             break
@@ -321,15 +327,65 @@ def _graficar_mapa_longitudinal(filetes, ancho_bloque):
 # ==========================================
 # 📄 PDF OPTIMIZADO
 # ==========================================
-def _fig_to_png(fig, dpi=72):  # ✅ Reducido de 150 a 72
+def _fig_to_png(fig, dpi=72):
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
     buf.seek(0); return buf
 
+def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_bovedilla, modo_uniforme):
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=15)
+    vg, vk, vb = r['vol_gross_m3'], r['vol_kerf_m3'], r['vol_bloque_m3']
+    vpr = vg * (factor_perfilado/100) if modo_bovedilla else 0.0
+    vn, vr = vg - vpr, max(0, vb - vg - vk)
+    pn, pp, pk, pr = [(v/vb)*100 for v in [vn, vpr, vk, vr]]
+    wn, wp, wk, wr = [(v*densidad) for v in [vn, vpr, vk, vr]]
+    wt = vb * densidad
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 22)
+    pdf.cell(0, 15, 'Reporte EPS - Pieza Unica', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 13)
+    pdf.cell(0, 10, f'Dimensiones pieza: {d1} x {d2} x {d3} cm', ln=True, align='C')
+    pdf.cell(0, 8, f'Bloque: {r["ancho_usado"]:.0f} x {ALTO_BLOQUE:.0f} x {LARGO_BLOQUE:.0f} cm | Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, 'RESUMEN', ln=True)
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 7, f'Total piezas: {r["total"]} | Capas: {r["capas"]} | Pz/capa: {r["ps"]}', ln=True)
+    pdf.cell(0, 7, f'Eficiencia: {(vg/vb)*100:.2f}% | Volumen: {vg:.4f} m3 | Peso bloque: {wt:.2f} kg', ln=True)
+    pdf.ln(5)
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'PLANOS DE CORTE', ln=True)
+    fig = _graficar_single(r)
+    pdf.image(_fig_to_png(fig, dpi=72), x=10, w=190)
+    plt.close(fig)
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'DESGLOSE DEL BLOQUE (100%)', ln=True)
+    pdf.ln(5)
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 8, f'Volumen total: {vb:.4f} m3 | Peso total: {wt:.2f} kg', ln=True)
+    pdf.ln(3)
+    col_w = [50, 25, 35, 35, 35]
+    for i, h in enumerate(['Concepto', '%', 'Volumen (m3)', 'Peso (kg)', 'Descripcion']):
+        pdf.cell(col_w[i], 7, h, border=1, align='C')
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 9)
+    filas = [('Producto Neto', pn, vn, wn, 'Piezas utiles'), ('Kerf (Hilo)', pk, vk, wk, 'Desgaste hilo'), ('Restante Fisico', pr, vr, wr, 'Residuo')]
+    if modo_bovedilla: filas.insert(1, ('Perfilado Bovedilla', pp, vpr, wp, 'CNC'))
+    for concepto, pct, vol, peso, desc in filas:
+        pdf.cell(col_w[0], 6, concepto, border=1)
+        pdf.cell(col_w[1], 6, f'{pct:.2f}%', border=1, align='C')
+        pdf.cell(col_w[2], 6, f'{vol:.4f}', border=1, align='C')
+        pdf.cell(col_w[3], 6, f'{peso:.2f}', border=1, align='C')
+        pdf.cell(col_w[4], 6, desc, border=1)
+        pdf.ln()
+    pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
+    return pdf_buffer.getvalue()
+
 def _generar_reporte_pdf_mix_optimizado(bloques, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_total_colocado, progress_callback=None):
-    """
-    PDF optimizado: solo 5 filetes por bloque + tabla resumen del resto.
-    """
+    """PDF optimizado: solo 5 filetes por bloque + tabla resumen del resto."""
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
     vol_bloque_unitario = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
@@ -415,12 +471,12 @@ def _generar_reporte_pdf_mix_optimizado(bloques, ancho_bloque, densidad, total_p
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v27.1 - Optimizado (15-30 seg)")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v27.2 - Mezcla real + optimizado")
 
 if not FPDF_DISPONIBLE:
     st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt` para habilitar PDFs.")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Multi-Bloque Optimizado)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Mezcla Real Multi-Bloque)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -475,8 +531,8 @@ with tab1:
                                        file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
 
 with tab2:
-    st.header("🔀 Empaquetado 3D Multi-Bloque (Optimizado)")
-    st.markdown("🔹 **Optimizado:** 15-30 segundos en lugar de 2 minutos. 🔹 PDF resumido: 5 filetes por bloque + tabla.")
+    st.header("🔀 Empaquetado 3D Mezcla Real (Multi-Bloque)")
+    st.markdown("🔹 **Mezcla real:** alterna tipos de piezas para llenar huecos. 🔹 **Optimizado:** 15-30 seg en lugar de 2 min.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -547,7 +603,7 @@ with tab2:
             st.info(f"📐 **Estimación:** ~{bloques_estimados} bloques necesarios")
             
             # Progress bar para empaquetado
-            progress_bar = st.progress(0, text="Empaquetando piezas...")
+            progress_bar = st.progress(0, text="Empaquetando piezas con mezcla real...")
             start_time = time.time()
             
             def progress_callback(piezas_colocadas, total_piezas, bloque_num):
@@ -586,7 +642,7 @@ with tab2:
             # PDF optimizado
             if FPDF_DISPONIBLE:
                 st.subheader("📄 Generar PDF")
-                st.caption("💡 PDF optimizado: 5 filetes por bloque + tabla resumen del resto. Tiempo: ~15-30 seg")
+                st.caption("💡 PDF optimizado: 5 filetes por bloque + tabla resumen. Tiempo: ~15-30 seg")
                 
                 if st.button("🚀 Generar PDF Optimizado", type="primary", use_container_width=True, key="btn_pdf_mix"):
                     pdf_progress = st.progress(0, text="Generando PDF...")
@@ -625,4 +681,4 @@ with tab2:
                     st.pyplot(_graficar_filete(f, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v27.1 | Optimizado: heap + DPI 72 + PDF resumido = 15-30 seg en lugar de 2 min.*")
+st.caption("💡 *Covintec v27.2 | Mezcla real + optimizado: 15-30 seg en lugar de 2 min.*")
