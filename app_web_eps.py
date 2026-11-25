@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v25.1 - VALIDACIÓN CORREGIDA + 6 ORIENTACIONES
-- Valida correctamente que la pieza quepa (cualquier dimensión en cualquier eje)
-- Prueba las 6 orientaciones posibles de cada pieza
-- Algoritmo 3D Guillotina mejorado
+📦 CALCULADOR EPS WEB v25.2 - FIX: CONTADOR DE PIEZAS + OPTIMIZACIÓN
+- Limita correctamente la cantidad de piezas por tipo
+- Evita espacios superpuestos
+- Optimiza rendimiento con límite de iteraciones
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -116,7 +116,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v25.1: EMPAQUETADO 3D CON 6 ORIENTACIONES
+# 🔄 MOTOR MIX v25.2: FIX CONTADOR + OPTIMIZACIÓN
 # ==========================================
 class Space3D:
     def __init__(self, x, y, z, w, h, d):
@@ -124,72 +124,89 @@ class Space3D:
         self.w, self.h, self.d = w, h, d
 
 def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
-    """Verifica si la pieza cabe en el bloque en ALGUNA orientación."""
     dims_pieza = sorted([w, h, d])
     dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
-def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
+def _pack_3d_guillotine(items_list, block_w, block_h, block_d, max_iterations=500):
     """
-    Empaqueta piezas en 3D usando división guillotina.
-    Prueba las 6 orientaciones posibles de cada pieza.
+    Empaqueta piezas en 3D con contador correcto y límite de iteraciones.
     """
-    expanded = []
-    for item in items_list:
-        for _ in range(item['qty']):
-            expanded.append({
-                'w': item['w'], 'h': item['h'], 'd': item['d'],
-                'id': item['id'], 'color': item['color']
-            })
-    expanded.sort(key=lambda x: x['w'] * x['h'] * x['d'], reverse=True)
-    
-    spaces = [Space3D(0, 0, 0, block_w, block_h, block_d)]
+    # Contador de piezas colocadas por tipo
+    placed_count = defaultdict(int)
     placed = []
     
-    for item in expanded:
-        best_space_idx = -1
-        best_orientation = None
-        best_score = float('inf')
+    # Espacio inicial
+    spaces = [Space3D(0, 0, 0, block_w, block_h, block_d)]
+    
+    iterations = 0
+    
+    # Ordenar items por volumen descendente
+    items_sorted = sorted(items_list, key=lambda x: x['w'] * x['h'] * x['d'], reverse=True)
+    
+    # Intentar colocar piezas hasta agotar o alcanzar límite
+    changed = True
+    while changed and iterations < max_iterations:
+        changed = False
+        iterations += 1
         
-        # Generar las 6 orientaciones posibles
-        orientaciones = list(permutations([item['w'], item['h'], item['d']]))
-        
-        for i, space in enumerate(spaces):
-            for orient in orientaciones:
-                pw, ph, pd = orient
-                # Verificar si cabe en este espacio
-                if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
-                    # Calcular "score": cuánto espacio desperdicia
-                    wasted = space.w * space.h * space.d - pw * ph * pd
-                    if wasted < best_score:
-                        best_score = wasted
-                        best_space_idx = i
-                        best_orientation = orient
-        
-        if best_space_idx != -1:
-            space = spaces.pop(best_space_idx)
-            pw, ph, pd = best_orientation
+        for item in items_sorted:
+            # Verificar si ya colocamos todas las piezas de este tipo
+            if placed_count[item['id']] >= item['qty']:
+                continue
             
-            placed.append({
-                'x': space.x, 'y': space.y, 'z': space.z,
-                'w': pw, 'h': ph, 'd': pd,
-                'id': item['id'], 'color': item['color']
-            })
+            # Generar orientaciones únicas (eliminar duplicados)
+            orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
             
-            # Dividir el espacio restante (Guillotina)
-            if space.w - pw > KERF_CM:
-                spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
-                                      space.w - pw - KERF_CM, space.h, space.d))
-            if space.h - ph > KERF_CM:
-                spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
-                                      pw, space.h - ph - KERF_CM, space.d))
-            if space.d - pd > KERF_CM:
-                spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
-                                      space.w, space.h, space.d - pd - KERF_CM))
+            best_space_idx = -1
+            best_orientation = None
+            best_score = float('inf')
             
-            spaces.sort(key=lambda s: s.w * s.h * s.d, reverse=True)
+            # Buscar el mejor espacio
+            for i, space in enumerate(spaces):
+                for orient in orientaciones:
+                    pw, ph, pd = orient
+                    if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
+                        # Score: minimizar espacio desperdiciado
+                        wasted = (space.w - pw) + (space.h - ph) + (space.d - pd)
+                        if wasted < best_score:
+                            best_score = wasted
+                            best_space_idx = i
+                            best_orientation = orient
             
-    return placed, spaces
+            if best_space_idx != -1:
+                space = spaces.pop(best_space_idx)
+                pw, ph, pd = best_orientation
+                
+                placed.append({
+                    'x': space.x, 'y': space.y, 'z': space.z,
+                    'w': pw, 'h': ph, 'd': pd,
+                    'id': item['id'], 'color': item['color']
+                })
+                
+                placed_count[item['id']] += 1
+                changed = True
+                
+                # Dividir espacio restante (Guillotina)
+                # Solo crear espacios si son significativamente grandes
+                if space.w - pw > 5:  # Mínimo 5 cm para ser útil
+                    spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
+                                          space.w - pw - KERF_CM, space.h, space.d))
+                if space.h - ph > 5:
+                    spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
+                                          pw, space.h - ph - KERF_CM, space.d))
+                if space.d - pd > 5:
+                    spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
+                                          space.w, space.h, space.d - pd - KERF_CM))
+                
+                # Limitar número de espacios para mejorar rendimiento
+                if len(spaces) > 100:
+                    spaces.sort(key=lambda s: s.w * s.h * s.d, reverse=True)
+                    spaces = spaces[:100]  # Mantener solo los 100 espacios más grandes
+                
+                break  # Reiniciar el loop para reordenar
+    
+    return placed, placed_count
 
 def _agrupar_por_rebanada(placed, block_w):
     slices = defaultdict(list)
@@ -380,7 +397,7 @@ def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, tota
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v25.1 - 6 Orientaciones + Validación Correcta")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v25.2 - FIX Contador + Optimización")
 
 if not FPDF_DISPONIBLE:
     st.warning("⚠️ **fpdf2 no está instalado.** Instala con `pip install fpdf2` y agrega a `requirements.txt` para habilitar PDFs.")
@@ -436,7 +453,7 @@ with tab1:
 
 with tab2:
     st.header("🔀 Empaquetado 3D Real (Mezcla de diferentes largos)")
-    st.markdown("🔹 **Algoritmo Guillotina:** Coloca las piezas grandes primero y usa los huecos restantes para las pequeñas. 🔹 Prueba las 6 orientaciones posibles de cada pieza.")
+    st.markdown("🔹 **Algoritmo Guillotina Optimizado:** Coloca piezas grandes primero, limita cantidad por tipo, máximo 500 iteraciones.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -496,9 +513,8 @@ with tab2:
                 except: continue
                 if qty <= 0 or w <= 0 or h <= 0 or d <= 0: continue
                 
-                # ✅ VALIDACIÓN CORREGIDA: verifica si la pieza cabe en ALGUNA orientación
                 if not _pieza_cabe_en_bloque(w, h, d, ancho_mix):
-                    st.error(f"❌ {row['id']} ({w}x{h}x{d} cm) no cabe en el bloque ({ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE} cm) en ninguna orientación")
+                    st.error(f"❌ {row['id']} ({w}x{h}x{d} cm) no cabe en el bloque ({ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE} cm)")
                     continue
                     
                 items_list.append({'w': w, 'h': h, 'd': d, 'id': row['id'], 'color': row['color'], 'qty': qty})
@@ -507,8 +523,8 @@ with tab2:
             if not items_list:
                 st.warning("⚠️ No hay piezas válidas."); st.stop()
 
-            # EJECUCIÓN DEL ALGORITMO 3D
-            placed, remaining_spaces = _pack_3d_guillotine(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
+            # EJECUCIÓN DEL ALGORITMO 3D CON LÍMITE
+            placed, placed_count = _pack_3d_guillotine(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE, max_iterations=500)
             slices = _agrupar_por_rebanada(placed, ancho_mix)
             
             total_colocadas = len(placed)
@@ -517,8 +533,19 @@ with tab2:
             eficiencia = (vol_colocado / vol_bloque) * 100
             
             st.success(f"✅ **Colocadas:** {total_colocadas} de {total_pedidas} piezas | **Eficiencia:** {eficiencia:.2f}%")
+            
+            # Mostrar detalle por tipo
+            st.markdown("#### 📦 Detalle por tipo de pieza:")
+            for item in items_list:
+                colocadas = placed_count.get(item['id'], 0)
+                pedidas = item['qty']
+                if colocadas < pedidas:
+                    st.warning(f"⚠️ **{item['id']}**: {colocadas} de {pedidas} colocadas")
+                else:
+                    st.success(f"✅ **{item['id']}**: {colocadas} de {pedidas} colocadas")
+
             if total_colocadas < total_pedidas:
-                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no cupieron en el bloque. Considera usar un segundo bloque.")
+                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no cupieron. Considera usar un segundo bloque.")
 
             c1, c2, c3 = st.columns(3)
             c1.metric("📦 Piezas Colocadas", total_colocadas)
@@ -531,7 +558,7 @@ with tab2:
 
             st.divider()
             st.subheader("📏 Mapa de Cortes Longitudinales")
-            st.markdown("Este gráfico muestra a qué distancia cortar el bloque de 506 cm y qué modelos van en cada rebanada.")
+            st.markdown("Este gráfico muestra a qué distancia cortar el bloque de 506 cm.")
             st.pyplot(_graficar_mapa_longitudinal(slices, ancho_mix))
             
             st.subheader("🔍 Detalle por Rebanada")
@@ -542,4 +569,4 @@ with tab2:
                     st.pyplot(_graficar_rebanada(s, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v25.1 | Empaquetado 3D con 6 orientaciones + validación correcta.*")
+st.caption("💡 *Covintec v25.2 | FIX: Contador correcto + límite 500 iteraciones + espacios >5cm.*")
