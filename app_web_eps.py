@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v24.0 - GESTIÓN DE FILAS + REPORTE PDF
-- Botones: Agregar fila, Limpiar tabla, Eliminar fila específica
-- Reporte PDF con portada, bloques, segmentos y resumen final
-- Usa fpdf2 (pip install fpdf2)
+📦 CALCULADOR EPS WEB v24.1 - COMPLETO Y CORREGIDO
+- Import condicional de fpdf2
+- PDF con BytesIO (sin errores de escritura)
+- Textos sin caracteres especiales (acentos, ñ, m³)
+- Gestión de filas + Reporte PDF completo
+- Persistencia de resultados Mix
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -12,7 +14,15 @@ import matplotlib.patches as patches
 import math
 import io
 from collections import defaultdict
-from fpdf import FPDF
+
+# ==========================================
+# 📄 IMPORT CONDICIONAL DE FPDF2
+# ==========================================
+try:
+    from fpdf import FPDF
+    FPDF_DISPONIBLE = True
+except ImportError:
+    FPDF_DISPONIBLE = False
 
 KERF_CM = 0.2
 ALTO_BLOQUE = 66.0
@@ -110,7 +120,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v24.0
+# 🔄 MOTOR MIX v24.1
 # ==========================================
 def _ffdh_nesting(ancho, alto, piezas):
     if not piezas: return []
@@ -248,7 +258,7 @@ def _graficar_transversal_segmento(s, ancho):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 📄 GENERADOR DE PDF
+# 📄 GENERADOR DE PDF (CORREGIDO)
 # ==========================================
 def _fig_to_png(fig, dpi=150):
     buf = io.BytesIO()
@@ -257,7 +267,7 @@ def _fig_to_png(fig, dpi=150):
     return buf
 
 def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, modo_bovedilla, total_pedidas, total_colocadas):
-    """Genera PDF completo con todos los bloques y resumen."""
+    """Genera PDF completo. Devuelve bytes del PDF."""
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
     
@@ -270,7 +280,6 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
     pdf.cell(0, 10, f'Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
     pdf.ln(10)
     
-    # Resumen general
     vol_total = sum(_volumen_piezas_segmento(s) for b in bloques for s in b['segmentos'])
     vol_bloques = len(bloques) * (ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6)
     ef = (vol_total / vol_bloques * 100) if vol_bloques > 0 else 0
@@ -294,19 +303,16 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
         pdf.cell(0, 10, f'BLOQUE {num_b}/{len(bloques)}', ln=True)
         pdf.set_font('Helvetica', '', 11)
         
-        # Longitudinal
         fig_long = _graficar_longitudinal_bloque(bloque, ancho_mix, num_b, len(bloques))
         buf = _fig_to_png(fig_long)
         pdf.image(buf, x=10, w=190)
         plt.close(fig_long)
         pdf.ln(5)
         
-        # Tabla de segmentos
         pdf.set_font('Helvetica', 'B', 12)
         pdf.cell(0, 8, 'Segmentos del bloque:', ln=True)
         pdf.set_font('Helvetica', '', 9)
         
-        # Headers
         col_w = [10, 25, 40, 25, 20, 25, 30]
         headers = ['#', 'Largo', 'Modelos', 'Pz/capa', 'Capas', 'Total Pz', 'Longitud']
         for i, h in enumerate(headers):
@@ -321,7 +327,6 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
                 pdf.cell(col_w[j], 6, val, border=1, align='C')
             pdf.ln()
         
-        # Desglose
         pdf.ln(5)
         pdf.set_font('Helvetica', 'B', 12)
         pdf.cell(0, 8, 'Desglose del bloque:', ln=True)
@@ -341,7 +346,6 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
         pdf.cell(0, 6, f'Kerf (Hilo): {pk:.2f}% ({vk:.4f} m3)', ln=True)
         pdf.cell(0, 6, f'Restante Fisico: {pr:.2f}% ({vr:.4f} m3)', ln=True)
         
-        # Transversal de cada segmento
         pdf.add_page()
         pdf.set_font('Helvetica', 'B', 14)
         pdf.cell(0, 10, f'Vistas Transversales - Bloque {num_b}', ln=True)
@@ -383,7 +387,6 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
     pdf.ln()
     
     for num_b, bloque in enumerate(bloques, 1):
-        vk_b = _calcular_kerf_bloque(bloque['segmentos'], ancho_mix)
         vseg_b = sum(_volumen_piezas_segmento(s) for s in bloque['segmentos'])
         vb_b = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
         ef_b = (vseg_b / vb_b * 100) if vb_b > 0 else 0
@@ -396,13 +399,16 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
             pdf.cell(col_w2[j], 6, val, border=1, align='C')
         pdf.ln()
     
-    return pdf
+    # ✅ Escribir PDF en BytesIO y devolver bytes
+    pdf_buffer = io.BytesIO()
+    pdf.output(pdf_buffer)
+    return pdf_buffer.getvalue()
 
 # ==========================================
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix v24.0 + PDF")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix v24.1 + PDF")
 
 tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Nesting FFDH)"])
 
@@ -464,6 +470,10 @@ with tab2:
     st.header("🔀 Optimización de Mezcla (Nesting FFDH)")
     st.markdown("🔹 Mezcla modelos con el mismo largo. 🔹 Divide grupos largos. 🔹 Conteo exacto. 🔹 Reporte PDF.")
 
+    if not FPDF_DISPONIBLE:
+        st.warning("⚠️ **fpdf2 no está instalado.** El reporte PDF no estará disponible. "
+                   "Agrega `fpdf2` a tu archivo `requirements.txt` y reinicia la app.")
+
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("⚙️ Configuración")
@@ -507,7 +517,6 @@ with tab2:
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
         
-        # ✅ NUEVO: Botones de gestión de filas
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         with col_btn1:
             if st.button("➕ Agregar fila", use_container_width=True, key="btn_add_row"):
@@ -562,19 +571,21 @@ with tab2:
                 st.warning(f"⚠️ **Eficiencia baja ({ef_global:.1f}%)**: cantidades pequeñas para llenar bloques de 506 cm. "
                            f"Agrupa pedidos de varios días o aumenta cantidades por modelo.")
 
-            # ✅ NUEVO: Botón de descarga PDF
-            pdf = _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado_mix, 
-                                       modo_bovedilla_mix, total_piezas_pedidas, total_piezas_colocadas)
-            pdf_bytes = pdf.output()
-            st.download_button(
-                label="📄 Descargar Reporte PDF",
-                data=pdf_bytes,
-                file_name=f"reporte_eps_{len(bloques)}bloques.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-                key="btn_pdf"
-            )
+            # ✅ Botón PDF (solo si fpdf2 está disponible)
+            if FPDF_DISPONIBLE:
+                pdf_bytes = _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado_mix, 
+                                                 modo_bovedilla_mix, total_piezas_pedidas, total_piezas_colocadas)
+                st.download_button(
+                    label="📄 Descargar Reporte PDF",
+                    data=pdf_bytes,
+                    file_name=f"reporte_eps_{len(bloques)}bloques.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_pdf"
+                )
+            else:
+                st.info("📄 **Reporte PDF no disponible.** Instala `fpdf2` para habilitar esta función.")
 
             if len(bloques) > 1:
                 num_b = st.radio("Ver bloque:", list(range(1, len(bloques)+1)), horizontal=True, key="sel_bloque")
@@ -624,4 +635,4 @@ with tab2:
                 st.info("Este bloque no tiene segmentos.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v24.0 | Gestión de filas + Reporte PDF completo.*")
+st.caption("💡 *Covintec v24.1 | Gestión de filas + Reporte PDF completo.*")
