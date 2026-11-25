@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v23.0 - MIX ROBUSTO (FIX selectbox + conteo exacto)
-- FIX 1: selectbox con índices numéricos + format_func (elimina ValueError al cambiar segmento)
-- FIX 2: conteo exacto de piezas por sub-segmento (sin sobreproducción)
-- FIX 3: volumen exacto con capa parcial
+📦 CALCULADOR EPS WEB v23.1 - FIX: PERSISTENCIA DE RESULTADOS MIX
+- Usa session_state para mantener resultados al cambiar de bloque
+- El botón solo calcula una vez, los resultados persisten
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -109,7 +108,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v23: FFDH + CONTEO EXACTO
+# 🔄 MOTOR MIX v23.1: FFDH + CONTEO EXACTO
 # ==========================================
 def _ffdh_nesting(ancho, alto, piezas):
     if not piezas: return []
@@ -144,12 +143,11 @@ def _ffdh_nesting(ancho, alto, piezas):
     return layout
 
 def _distribuir_en_bloques(grupos, ancho):
-    """Divide grupos en sub-segmentos con CONTEO EXACTO de piezas."""
     sub_segmentos = []
     for m3, piezas in grupos.items():
         layout = _ffdh_nesting(ancho, ALTO_BLOQUE, piezas)
         if not layout: continue
-        ppc = len(layout)  # piezas por capa (patrón)
+        ppc = len(layout)
         qty_total = sum(p['qty'] for p in piezas)
         if ppc == 0: continue
         capas_max_segmento = int(LARGO_BLOQUE // (m3 + KERF_CM))
@@ -197,7 +195,6 @@ def _calcular_kerf_bloque(segmentos, ancho):
     return vol / 1e6
 
 def _volumen_piezas_segmento(s):
-    """Volumen EXACTO con capa parcial."""
     vol_capa = sum(p['w'] * p['h'] * s['m3'] for p in s['layout']) / 1e6
     ppc = s['piezas_por_capa']
     piezas = s['piezas_en_segmento']
@@ -254,7 +251,7 @@ def _graficar_transversal_segmento(s, ancho):
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Robusto v23.0")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix Robusto v23.1")
 
 tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Nesting FFDH)"])
 
@@ -357,9 +354,14 @@ with tab2:
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
         calc_mix = st.button("🚀 Optimizar Mezcla", type="primary", use_container_width=True, key="btn_mix")
+        
+        # ✅ FIX: Guardar flag en session_state cuando se presiona el botón
+        if calc_mix:
+            st.session_state['mix_calculado'] = True
 
     with col2:
-        if calc_mix:
+        # ✅ FIX: Verificar session_state en lugar del botón
+        if st.session_state.get('mix_calculado', False):
             st.subheader("📊 Resultados Mix")
             grupos = defaultdict(list)
             for row in st.session_state['prod_mix']:
@@ -431,7 +433,6 @@ with tab2:
 
             st.subheader("🔍 Vista Transversal por Segmento")
             if bloque['segmentos']:
-                # ✅ FIX: índices numéricos + format_func (elimina ValueError al cambiar segmento)
                 nombres = [f"Segmento {i+1}: {', '.join(sorted(set(p['id'] for p in s['layout'])))} | largo {s['m3']:.1f} cm | {s['piezas_en_segmento']} pz"
                            for i, s in enumerate(bloque['segmentos'])]
                 idx = st.selectbox("Elige segmento:", range(len(bloque['segmentos'])),
@@ -442,4 +443,4 @@ with tab2:
                 st.info("Este bloque no tiene segmentos.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v23.0 | FIX: selectbox robusto con índices + conteo exacto de piezas por sub-segmento.*")
+st.caption("💡 *Covintec v23.1 | FIX: Resultados Mix persisten al cambiar de bloque usando session_state.*")
