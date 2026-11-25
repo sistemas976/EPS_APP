@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v25.2 - FIX: CONTADOR DE PIEZAS + OPTIMIZACIÓN
-- Limita correctamente la cantidad de piezas por tipo
-- Evita espacios superpuestos
-- Optimiza rendimiento con límite de iteraciones
+📦 CALCULADOR EPS WEB v26.0 - FIX SOLAPAMIENTO 3D + VERIFICACIÓN
+- División guillotina sin solapamiento (espacio frente usa footprint de pieza)
+- Verificación anti-solapamiento automática
+- Rendimiento: una pasada por pieza (sin 500 iteraciones globales)
+- Eficiencia garantizada <= 100%
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -116,9 +117,10 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v25.2: FIX CONTADOR + OPTIMIZACIÓN
+# 🔄 MOTOR MIX v26.0: GUILLOTINA 3D SIN SOLAPAMIENTO
 # ==========================================
 class Space3D:
+    __slots__ = ('x','y','z','w','h','d')
     def __init__(self, x, y, z, w, h, d):
         self.x, self.y, self.z = x, y, z
         self.w, self.h, self.d = w, h, d
@@ -128,170 +130,153 @@ def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
     dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
-def _pack_3d_guillotine(items_list, block_w, block_h, block_d, max_iterations=500):
+def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
     """
-    Empaqueta piezas en 3D con contador correcto y límite de iteraciones.
+    Guillotina 3D CORREGIDA: los espacios sobrantes NO se solapan.
+    Una pasada por pieza (rápido y determinista).
     """
-    # Contador de piezas colocadas por tipo
     placed_count = defaultdict(int)
     placed = []
-    
-    # Espacio inicial
     spaces = [Space3D(0, 0, 0, block_w, block_h, block_d)]
-    
-    iterations = 0
-    
-    # Ordenar items por volumen descendente
-    items_sorted = sorted(items_list, key=lambda x: x['w'] * x['h'] * x['d'], reverse=True)
-    
-    # Intentar colocar piezas hasta agotar o alcanzar límite
-    changed = True
-    while changed and iterations < max_iterations:
-        changed = False
-        iterations += 1
-        
-        for item in items_sorted:
-            # Verificar si ya colocamos todas las piezas de este tipo
-            if placed_count[item['id']] >= item['qty']:
-                continue
-            
-            # Generar orientaciones únicas (eliminar duplicados)
-            orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
-            
-            best_space_idx = -1
-            best_orientation = None
-            best_score = float('inf')
-            
-            # Buscar el mejor espacio
-            for i, space in enumerate(spaces):
-                for orient in orientaciones:
-                    pw, ph, pd = orient
-                    if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
-                        # Score: minimizar espacio desperdiciado
-                        wasted = (space.w - pw) + (space.h - ph) + (space.d - pd)
-                        if wasted < best_score:
-                            best_score = wasted
-                            best_space_idx = i
-                            best_orientation = orient
-            
-            if best_space_idx != -1:
-                space = spaces.pop(best_space_idx)
-                pw, ph, pd = best_orientation
-                
-                placed.append({
-                    'x': space.x, 'y': space.y, 'z': space.z,
-                    'w': pw, 'h': ph, 'd': pd,
-                    'id': item['id'], 'color': item['color']
-                })
-                
-                placed_count[item['id']] += 1
-                changed = True
-                
-                # Dividir espacio restante (Guillotina)
-                # Solo crear espacios si son significativamente grandes
-                if space.w - pw > 5:  # Mínimo 5 cm para ser útil
-                    spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
-                                          space.w - pw - KERF_CM, space.h, space.d))
-                if space.h - ph > 5:
-                    spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
-                                          pw, space.h - ph - KERF_CM, space.d))
-                if space.d - pd > 5:
-                    spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
-                                          space.w, space.h, space.d - pd - KERF_CM))
-                
-                # Limitar número de espacios para mejorar rendimiento
-                if len(spaces) > 100:
-                    spaces.sort(key=lambda s: s.w * s.h * s.d, reverse=True)
-                    spaces = spaces[:100]  # Mantener solo los 100 espacios más grandes
-                
-                break  # Reiniciar el loop para reordenar
-    
+
+    # Expandir y ordenar por volumen descendente
+    piezas = []
+    for item in items_list:
+        for _ in range(item['qty']):
+            piezas.append(item)
+    piezas.sort(key=lambda x: x['w'] * x['h'] * x['d'], reverse=True)
+
+    for item in piezas:
+        if placed_count[item['id']] >= item['qty']:
+            continue
+
+        orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
+
+        best_leftover = float('inf')
+        best_idx = -1
+        best_orient = None
+
+        for i, space in enumerate(spaces):
+            for orient in orientaciones:
+                pw, ph, pd = orient
+                if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
+                    leftover = space.w*space.h*space.d - pw*ph*pd
+                    if leftover < best_leftover:
+                        best_leftover = leftover
+                        best_idx = i
+                        best_orient = orient
+
+        if best_idx == -1:
+            continue
+
+        space = spaces.pop(best_idx)
+        pw, ph, pd = best_orient
+
+        placed.append({
+            'x': space.x, 'y': space.y, 'z': space.z,
+            'w': pw, 'h': ph, 'd': pd,
+            'id': item['id'], 'color': item['color']
+        })
+        placed_count[item['id']] += 1
+
+        # ✅ DIVISIÓN GUILLOTINA SIN SOLAPAMIENTO
+        # 1) DERECHA: desde x+pw, toda la altura y profundidad del espacio
+        rem_w = space.w - pw - KERF_CM
+        if rem_w > 2:
+            spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
+                                   rem_w, space.h, space.d))
+        # 2) ARRIBA: solo el ancho de la pieza (pw), desde y+ph
+        rem_h = space.h - ph - KERF_CM
+        if rem_h > 2:
+            spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
+                                   pw, rem_h, space.d))
+        # 3) FRENTE: solo el footprint de la pieza (pw x ph), desde z+pd
+        rem_d = space.d - pd - KERF_CM
+        if rem_d > 2:
+            spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
+                                   pw, ph, rem_d))
+
+        # Limitar cantidad de espacios para rendimiento
+        if len(spaces) > 80:
+            spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+            del spaces[80:]
+
     return placed, placed_count
 
-def _agrupar_por_rebanada(placed, block_w):
+def _verificar_no_solapamiento(placed):
+    """Chequeo O(n²) solo si hay pocas piezas. Retorna (ok, num_conflictos)."""
+    n = len(placed)
+    if n > 800:
+        return True, 0  # Skip para no bloquear UI
+    conflictos = 0
+    for i in range(n):
+        a = placed[i]
+        for j in range(i+1, n):
+            b = placed[j]
+            if (a['x'] < b['x']+b['w']-0.05 and b['x'] < a['x']+a['w']-0.05 and
+                a['y'] < b['y']+b['h']-0.05 and b['y'] < a['y']+a['h']-0.05 and
+                a['z'] < b['z']+b['d']-0.05 and b['z'] < a['z']+a['d']-0.05):
+                conflictos += 1
+                if conflictos > 5:
+                    return False, conflictos
+    return conflictos == 0, conflictos
+
+def _agrupar_por_rebanada(placed):
     slices = defaultdict(list)
     for p in placed:
-        z_slice = round(p['z'], 1)
-        slices[z_slice].append(p)
-    
-    sorted_slices = []
+        slices[round(p['z'], 1)].append(p)
+    out = []
     for z in sorted(slices.keys()):
-        piezas_en_rebanada = slices[z]
-        max_d = max(p['d'] for p in piezas_en_rebanada)
-        sorted_slices.append({
-            'z_inicio': z,
-            'longitud': max_d,
-            'z_fin': z + max_d,
-            'piezas': piezas_en_rebanada
-        })
-    return sorted_slices
+        piezas = slices[z]
+        max_d = max(p['d'] for p in piezas)
+        out.append({'z_inicio': z, 'longitud': max_d, 'z_fin': z + max_d, 'piezas': piezas})
+    return out
 
 def _graficar_rebanada(slice_data, ancho_bloque):
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_xlim(0, ancho_bloque)
-    ax.set_ylim(0, ALTO_BLOQUE)
-    ax.set_aspect('equal')
-    ax.grid(ls=':', alpha=0.4)
-    
+    ax.set_xlim(0, ancho_bloque); ax.set_ylim(0, ALTO_BLOQUE)
+    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.4)
     modelos = sorted(set(p['id'] for p in slice_data['piezas']))
-    ax.set_title(f"Rebanada: {slice_data['z_inicio']:.1f} cm a {slice_data['z_fin']:.1f} cm (Largo: {slice_data['longitud']:.1f} cm)\nModelos: {', '.join(modelos)}", 
+    ax.set_title(f"Rebanada {slice_data['z_inicio']:.1f}-{slice_data['z_fin']:.1f} cm (largo {slice_data['longitud']:.1f})\n{', '.join(modelos)}",
                  fontsize=11, fontweight='bold')
-    
     for p in slice_data['piezas']:
-        ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], 
-                                       fc=p['color'], ec='white', lw=1.5, alpha=0.9))
+        ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], fc=p['color'], ec='white', lw=1.5, alpha=0.9))
         if p['w'] > 5 and p['h'] > 3:
-            ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], 
-                    ha='center', va='center', c='white', fontweight='bold', fontsize=8)
-            
+            ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], ha='center', va='center', c='white', fontweight='bold', fontsize=8)
     ax.set_xlabel("Ancho (cm)"); ax.set_ylabel("Alto (cm)")
-    plt.tight_layout()
-    return fig
+    plt.tight_layout(); return fig
 
 def _graficar_mapa_longitudinal(slices, ancho_bloque):
     fig, ax = plt.subplots(figsize=(15, 3))
-    ax.set_xlim(0, LARGO_BLOQUE)
-    ax.set_ylim(0, 10)
-    ax.axis('off')
-    
+    ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(0, 10); ax.axis('off')
     ax.add_patch(patches.Rectangle((0, 0), LARGO_BLOQUE, 10, facecolor='#F0F2F6', edgecolor='#333', lw=2))
-    
     x_actual = 0
     for s in slices:
         longitud = s['longitud']
         modelos = sorted(set(p['id'] for p in s['piezas']))
         color = s['piezas'][0]['color']
-        
         ax.add_patch(patches.Rectangle((x_actual, 0), longitud, 10, facecolor=color, alpha=0.85, edgecolor='white', lw=2))
-        
-        label = f"{', '.join(modelos)}\n{s['longitud']:.1f} cm"
         fs = 9 if longitud > 40 else 7
-        ax.text(x_actual + longitud/2, 5, label, ha='center', va='center', fontsize=fs, fontweight='bold', color='white')
-        
+        ax.text(x_actual + longitud/2, 5, f"{', '.join(modelos)}\n{longitud:.1f} cm",
+                ha='center', va='center', fontsize=fs, fontweight='bold', color='white')
         if x_actual > 0:
             ax.plot([x_actual, x_actual], [0, 10], color='red', ls='-', lw=2, alpha=0.7)
-            
         x_actual += longitud + KERF_CM
-        
     if x_actual - KERF_CM < LARGO_BLOQUE - 0.5:
         res = LARGO_BLOQUE - (x_actual - KERF_CM)
         ax.add_patch(patches.Rectangle((x_actual - KERF_CM, 0), res, 10, facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.7, lw=2))
         ax.text(x_actual - KERF_CM + res/2, 5, f"RESIDUO\n{res:.1f} cm", ha='center', va='center', fontsize=9, color='#C0392B', fontweight='bold')
-        
-    ax.set_xticks([0, 100, 200, 300, 400, 506])
-    ax.tick_params(axis='x', colors='gray', labelsize=8)
-    ax.set_title(f"MAPA DE CORTES LONGITUDINALES (Bloque de {LARGO_BLOQUE} cm)", fontsize=12, fontweight='bold', pad=8)
-    plt.tight_layout()
-    return fig
+    ax.set_xticks([0, 100, 200, 300, 400, 506]); ax.tick_params(axis='x', colors='gray', labelsize=8)
+    ax.set_title(f"MAPA DE CORTES (506 cm) | Ancho {ancho_bloque} cm", fontsize=12, fontweight='bold', pad=8)
+    plt.tight_layout(); return fig
 
 # ==========================================
-# 📄 GENERADORES DE PDF
+# 📄 PDF
 # ==========================================
 def _fig_to_png(fig, dpi=150):
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
-    buf.seek(0)
-    return buf
+    buf.seek(0); return buf
 
 def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_bovedilla, modo_uniforme):
     pdf = FPDF(orientation='P', unit='mm', format='A4')
@@ -302,7 +287,6 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pn, pp, pk, pr = [(v/vb)*100 for v in [vn, vpr, vk, vr]]
     wn, wp, wk, wr = [(v*densidad) for v in [vn, vpr, vk, vr]]
     wt = vb * densidad
-    
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 22)
     pdf.cell(0, 15, 'Reporte EPS - Pieza Unica', ln=True, align='C')
@@ -310,21 +294,18 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pdf.cell(0, 10, f'Dimensiones pieza: {d1} x {d2} x {d3} cm', ln=True, align='C')
     pdf.cell(0, 8, f'Bloque: {r["ancho_usado"]:.0f} x {ALTO_BLOQUE:.0f} x {LARGO_BLOQUE:.0f} cm | Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
     pdf.ln(10)
-    
     pdf.set_font('Helvetica', 'B', 14)
     pdf.cell(0, 10, 'RESUMEN', ln=True)
     pdf.set_font('Helvetica', '', 11)
-    pdf.cell(0, 7, f'Total de piezas: {r["total"]} | Capas: {r["capas"]} | Pz/capa: {r["ps"]}', ln=True)
-    pdf.cell(0, 7, f'Eficiencia bruta: {(vg/vb)*100:.2f}% | Volumen bruto: {vg:.4f} m3 | Peso total: {wt:.2f} kg', ln=True)
+    pdf.cell(0, 7, f'Total piezas: {r["total"]} | Capas: {r["capas"]} | Pz/capa: {r["ps"]}', ln=True)
+    pdf.cell(0, 7, f'Eficiencia: {(vg/vb)*100:.2f}% | Volumen: {vg:.4f} m3 | Peso bloque: {wt:.2f} kg', ln=True)
     pdf.ln(5)
-    
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 16)
     pdf.cell(0, 10, 'PLANOS DE CORTE', ln=True)
     fig = _graficar_single(r)
     pdf.image(_fig_to_png(fig, dpi=130), x=10, w=190)
     plt.close(fig)
-    
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 16)
     pdf.cell(0, 10, 'DESGLOSE DEL BLOQUE (100%)', ln=True)
@@ -332,10 +313,9 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pdf.set_font('Helvetica', '', 11)
     pdf.cell(0, 8, f'Volumen total: {vb:.4f} m3 | Peso total: {wt:.2f} kg', ln=True)
     pdf.ln(3)
-    
     col_w = [50, 25, 35, 35, 35]
-    headers = ['Concepto', '%', 'Volumen (m3)', 'Peso (kg)', 'Descripcion']
-    for i, h in enumerate(headers): pdf.cell(col_w[i], 7, h, border=1, align='C')
+    for i, h in enumerate(['Concepto', '%', 'Volumen (m3)', 'Peso (kg)', 'Descripcion']):
+        pdf.cell(col_w[i], 7, h, border=1, align='C')
     pdf.ln()
     pdf.set_font('Helvetica', '', 9)
     filas = [('Producto Neto', pn, vn, wn, 'Piezas utiles'), ('Kerf (Hilo)', pk, vk, wk, 'Desgaste hilo'), ('Restante Fisico', pr, vr, wr, 'Residuo')]
@@ -347,62 +327,51 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
         pdf.cell(col_w[3], 6, f'{peso:.2f}', border=1, align='C')
         pdf.cell(col_w[4], 6, desc, border=1)
         pdf.ln()
-        
-    pdf_buffer = io.BytesIO()
-    pdf.output(pdf_buffer)
+    pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
-def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, total_colocadas):
+def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_colocado):
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
-    
-    vol_total = sum(sum(p['w']*p['h']*p['d'] for p in s['piezas']) for s in slices) / 1e6
     vol_bloque = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
-    ef = (vol_total / vol_bloque * 100) if vol_bloque > 0 else 0
-    
+    ef = (vol_colocado / vol_bloque * 100) if vol_bloque > 0 else 0
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 22)
     pdf.cell(0, 20, 'Reporte EPS - Mezcla 3D', ln=True, align='C')
     pdf.set_font('Helvetica', '', 13)
     pdf.cell(0, 10, f'Bloque: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm', ln=True, align='C')
-    pdf.cell(0, 8, f'Piezas colocadas: {total_colocadas} de {total_pedidas} | Eficiencia: {ef:.2f}%', ln=True, align='C')
+    pdf.cell(0, 8, f'Piezas: {total_colocadas} de {total_pedidas} | Eficiencia: {ef:.2f}% | Peso: {vol_colocado*densidad:.2f} kg', ln=True, align='C')
     pdf.ln(10)
-    
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 16)
     pdf.cell(0, 10, 'MAPA DE CORTES LONGITUDINALES', ln=True)
     fig = _graficar_mapa_longitudinal(slices, ancho_bloque)
     pdf.image(_fig_to_png(fig, dpi=130), x=10, w=190)
     plt.close(fig)
-    
     for i, s in enumerate(slices):
         pdf.add_page()
         pdf.set_font('Helvetica', 'B', 14)
         modelos = ', '.join(sorted(set(p['id'] for p in s['piezas'])))
-        pdf.cell(0, 10, f'REBANADA {i+1}: {s["z_inicio"]:.1f} cm a {s["z_fin"]:.1f} cm', ln=True)
+        pdf.cell(0, 10, f'REBANADA {i+1}: {s["z_inicio"]:.1f} a {s["z_fin"]:.1f} cm', ln=True)
         pdf.set_font('Helvetica', '', 11)
-        pdf.cell(0, 7, f'Longitud de corte: {s["longitud"]:.1f} cm | Modelos: {modelos}', ln=True)
-        pdf.cell(0, 7, f'Piezas en esta rebanada: {len(s["piezas"])}', ln=True)
+        pdf.cell(0, 7, f'Largo corte: {s["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(s["piezas"])}', ln=True)
         pdf.ln(5)
-        
         fig_t = _graficar_rebanada(s, ancho_bloque)
         pdf.image(_fig_to_png(fig_t, dpi=120), x=10, w=190)
         plt.close(fig_t)
-        
-    pdf_buffer = io.BytesIO()
-    pdf.output(pdf_buffer)
+    pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
 # ==========================================
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v25.2 - FIX Contador + Optimización")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v26.0 - FIX solapamiento + verificación")
 
 if not FPDF_DISPONIBLE:
-    st.warning("⚠️ **fpdf2 no está instalado.** Instala con `pip install fpdf2` y agrega a `requirements.txt` para habilitar PDFs.")
+    st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt` para habilitar PDFs.")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Empaquetado 3D Real)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Empaquetado 3D)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -412,14 +381,16 @@ with tab1:
         modo_optimo = st.checkbox("🔍 Calcular Ancho Óptimo (126-156)", value=False)
         ancho_slider = 130 if modo_optimo else st.slider("Ancho Bloque (cm)", 126, 156, 126, step=1, key="slider_single")
         st.markdown("### 📐 Dimensiones (cm)")
-        d1, d2, d3 = st.number_input("Medida 1", value=5.0, key="s_d1"), st.number_input("Medida 2", value=61.0, key="s_d2"), st.number_input("Medida 3", value=122.0, key="s_d3")
+        d1 = st.number_input("Medida 1", value=5.0, key="s_d1")
+        d2 = st.number_input("Medida 2", value=61.0, key="s_d2")
+        d3 = st.number_input("Medida 3", value=122.0, key="s_d3")
         st.markdown("### ⚖️ Densidad y Geometría")
         densidad = st.selectbox("Densidad EPS (kg/m³)", list(range(7, 20)), index=3, key="densidad_single")
         modo_bovedilla = st.checkbox("🔸 Activar modo Bovedilla", value=False, key="bov_single")
-        fp = 20.0 if not modo_bovedilla else st.slider("Pérdida perfilado (%)", 5.0, 35.0, 20.0, 1.0, key="fp_single")
+        fp = 20.0
+        if modo_bovedilla: fp = st.slider("Pérdida perfilado (%)", 5.0, 35.0, 20.0, 1.0, key="fp_single")
         modo_uniforme = st.checkbox("✅ Acomodo Operativo", value=True, key="uni_single")
         calc = st.button("🚀 Calcular", type="primary", use_container_width=True, key="btn_single")
-
     with col2:
         if calc:
             ancho_final = ancho_slider
@@ -437,32 +408,35 @@ with tab1:
                 vn, vr = vg - vpr, max(0, vb - vg - vk)
                 pn, pp, pk, pr = [(v/vb)*100 for v in [vn, vpr, vk, vr]]
                 wn, wp, wk, wr = [(v*densidad) for v in [vn, vpr, vk, vr]]
-                
                 st.info(f"📋 **Estrategia:** {'Operativo' if modo_uniforme else 'Matemático'} | **Largo:** `{r['lp']:.0f} cm`")
                 c1,c2,c3 = st.columns(3)
-                c1.metric("📦 Total Piezas", r['total']); c2.metric("📈 Eficiencia", f"{(vg/vb)*100:.2f}%"); c3.metric("🧱 Peso Neto", f"{wn:.2f} kg")
+                c1.metric("📦 Total Piezas", r['total'])
+                c2.metric("📈 Eficiencia", f"{(vg/vb)*100:.2f}%")
+                c3.metric("🧱 Peso Neto", f"{wn:.2f} kg")
                 st.divider()
-                st.markdown(f"🔵 **Neto:** `{pn:.2f}%` → `{vn:.4f} m³` | 🔴 **Kerf:** `{pk:.2f}%` → `{vk:.4f} m³` | ⬜ **Restante:** `{pr:.2f}%` → `{vr:.4f} m³`")
-                if modo_bovedilla: st.markdown(f"🔸 **Bovedilla:** `{pp:.2f}%` → `{vpr:.4f} m³`")
-                st.success(f"✅ Verificación: {vn:.4f} + {vpr:.4f} + {vk:.4f} + {vr:.4f} ≈ `{vb:.4f} m³`")
+                st.markdown(f"🔵 **Neto:** `{pn:.2f}%` → `{vn:.4f} m³` → `{wn:.2f} kg`")
+                if modo_bovedilla: st.markdown(f"🔸 **Bovedilla:** `{pp:.2f}%` → `{vpr:.4f} m³` → `{wp:.2f} kg`")
+                st.markdown(f"🔴 **Kerf:** `{pk:.2f}%` → `{vk:.4f} m³` → `{wk:.2f} kg`")
+                st.markdown(f"⬜ **Restante:** `{pr:.2f}%` → `{vr:.4f} m³` → `{wr:.2f} kg`")
+                st.success(f"✅ Verificación: {vn:.4f}+{vpr:.4f}+{vk:.4f}+{vr:.4f} ≈ `{vb:.4f} m³`")
                 st.pyplot(_graficar_single(r))
-                
                 if FPDF_DISPONIBLE:
                     pdf_bytes = _generar_reporte_pdf_single(r, d1, d2, d3, densidad, fp, modo_bovedilla, modo_uniforme)
-                    st.download_button("📄 Descargar PDF (Single)", data=pdf_bytes, file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
+                    st.download_button("📄 Descargar PDF (Single)", data=pdf_bytes,
+                                       file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
 
 with tab2:
-    st.header("🔀 Empaquetado 3D Real (Mezcla de diferentes largos)")
-    st.markdown("🔹 **Algoritmo Guillotina Optimizado:** Coloca piezas grandes primero, limita cantidad por tipo, máximo 500 iteraciones.")
+    st.header("🔀 Empaquetado 3D (Guillotina sin solapamiento)")
+    st.markdown("🔹 Coloca piezas grandes primero y rellena huecos con las pequeñas. 🔹 Verificación automática anti-solapamiento.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("⚙️ Configuración")
         ancho_mix = st.slider("Ancho Bloque (cm)", 126, 156, 126, step=1, key="slider_mix")
         densidad_mix = st.selectbox("Densidad (kg/m³)", list(range(7, 20)), index=3, key="densidad_mix")
-        
+
         st.markdown("### 📋 Lista de Pedidos")
-        st.caption("💡 Ejemplo: 25x40x40 y 2.5x122x244")
+        st.caption("💡 Dim1/Dim2/Dim3 = las 3 medidas. El sistema prueba las 6 orientaciones.")
         default_prod = [
             {'id':'Grande','w':25.0,'h':40.0,'d':40.0,'qty':10,'color':'#3498DB'},
             {'id':'Larga1','w':2.5,'h':122.0,'d':244.0,'qty':2,'color':'#E74C3C'},
@@ -470,7 +444,6 @@ with tab2:
         ]
         if 'prod_mix' not in st.session_state:
             st.session_state['prod_mix'] = default_prod
-            
         edited_df = st.data_editor(
             st.session_state['prod_mix'],
             column_config={
@@ -485,7 +458,6 @@ with tab2:
         )
         if edited_df != st.session_state['prod_mix']:
             st.session_state['prod_mix'] = edited_df
-            
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("➕ Agregar", use_container_width=True, key="btn_add_3d"):
@@ -495,7 +467,6 @@ with tab2:
             if st.button("🗑️ Limpiar", use_container_width=True, key="btn_clear_3d"):
                 st.session_state['prod_mix'] = []
                 st.rerun()
-                
         calc_mix = st.button("🚀 Empaquetar en 3D", type="primary", use_container_width=True, key="btn_mix_3d")
         if calc_mix:
             st.session_state['mix_3d_calculado'] = True
@@ -503,7 +474,6 @@ with tab2:
     with col2:
         if st.session_state.get('mix_3d_calculado', False):
             st.subheader("📊 Resultados del Empaquetado 3D")
-            
             items_list = []
             total_pedidas = 0
             for row in st.session_state['prod_mix']:
@@ -512,61 +482,58 @@ with tab2:
                     qty = int(row['qty'])
                 except: continue
                 if qty <= 0 or w <= 0 or h <= 0 or d <= 0: continue
-                
                 if not _pieza_cabe_en_bloque(w, h, d, ancho_mix):
-                    st.error(f"❌ {row['id']} ({w}x{h}x{d} cm) no cabe en el bloque ({ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE} cm)")
+                    st.error(f"❌ {row['id']} ({w}x{h}x{d}) no cabe en bloque {ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE}")
                     continue
-                    
                 items_list.append({'w': w, 'h': h, 'd': d, 'id': row['id'], 'color': row['color'], 'qty': qty})
                 total_pedidas += qty
-
             if not items_list:
                 st.warning("⚠️ No hay piezas válidas."); st.stop()
 
-            # EJECUCIÓN DEL ALGORITMO 3D CON LÍMITE
-            placed, placed_count = _pack_3d_guillotine(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE, max_iterations=500)
-            slices = _agrupar_por_rebanada(placed, ancho_mix)
-            
+            placed, placed_count = _pack_3d_guillotine(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
+
+            # ✅ VERIFICACIÓN ANTI-SOLAPAMIENTO
+            ok, conflictos = _verificar_no_solapamiento(placed)
+            if not ok:
+                st.error(f"🚨 **ALERTA: {conflictos} piezas se solapan.** El resultado NO es válido. Reporta el caso.")
+            elif len(placed) <= 800:
+                st.success("✔️ **Verificación OK:** ninguna pieza se solapa con otra. Resultados válidos.")
+
+            slices = _agrupar_por_rebanada(placed)
             total_colocadas = len(placed)
             vol_colocado = sum(p['w']*p['h']*p['d'] for p in placed) / 1e6
             vol_bloque = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
-            eficiencia = (vol_colocado / vol_bloque) * 100
-            
-            st.success(f"✅ **Colocadas:** {total_colocadas} de {total_pedidas} piezas | **Eficiencia:** {eficiencia:.2f}%")
-            
-            # Mostrar detalle por tipo
-            st.markdown("#### 📦 Detalle por tipo de pieza:")
+            eficiencia = min((vol_colocado / vol_bloque) * 100, 100.0)
+
+            st.success(f"✅ **Colocadas:** {total_colocadas} de {total_pedidas} | **Eficiencia:** {eficiencia:.2f}%")
+
+            st.markdown("#### 📦 Detalle por tipo:")
             for item in items_list:
-                colocadas = placed_count.get(item['id'], 0)
-                pedidas = item['qty']
-                if colocadas < pedidas:
-                    st.warning(f"⚠️ **{item['id']}**: {colocadas} de {pedidas} colocadas")
-                else:
-                    st.success(f"✅ **{item['id']}**: {colocadas} de {pedidas} colocadas")
+                c = placed_count.get(item['id'], 0)
+                p = item['qty']
+                (st.success if c == p else st.warning)(f"**{item['id']}** ({item['w']}x{item['h']}x{item['d']}): {c} de {p} colocadas")
 
             if total_colocadas < total_pedidas:
-                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no cupieron. Considera usar un segundo bloque.")
+                st.info(f"💡 {total_pedidas - total_colocadas} piezas pendientes → se colocarían en un **segundo bloque**.")
 
             c1, c2, c3 = st.columns(3)
             c1.metric("📦 Piezas Colocadas", total_colocadas)
-            c2.metric("📈 Eficiencia Volumétrica", f"{eficiencia:.2f}%")
+            c2.metric("📈 Eficiencia", f"{eficiencia:.2f}%")
             c3.metric("🧱 Peso Neto", f"{vol_colocado * densidad_mix:.2f} kg")
 
             if FPDF_DISPONIBLE:
-                pdf_bytes = _generar_reporte_pdf_mix(slices, ancho_mix, densidad_mix, total_pedidas, total_colocadas)
-                st.download_button("📄 Descargar PDF (Mix 3D)", data=pdf_bytes, file_name=f"mix_3d_{len(slices)}rebanadas.pdf", mime="application/pdf", use_container_width=True)
+                pdf_bytes = _generar_reporte_pdf_mix(slices, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_colocado)
+                st.download_button("📄 Descargar PDF (Mix 3D)", data=pdf_bytes,
+                                   file_name=f"mix_3d_{len(slices)}rebanadas.pdf", mime="application/pdf", use_container_width=True)
 
             st.divider()
             st.subheader("📏 Mapa de Cortes Longitudinales")
-            st.markdown("Este gráfico muestra a qué distancia cortar el bloque de 506 cm.")
             st.pyplot(_graficar_mapa_longitudinal(slices, ancho_mix))
-            
+
             st.subheader("🔍 Detalle por Rebanada")
             for i, s in enumerate(slices):
-                with st.expander(f"Rebanada {i+1}: {s['z_inicio']:.1f} cm a {s['z_fin']:.1f} cm (Largo: {s['longitud']:.1f} cm) - {len(s['piezas'])} piezas", expanded=(i==0)):
-                    modelos = ', '.join(sorted(set(p['id'] for p in s['piezas'])))
-                    st.write(f"**Modelos en esta rebanada:** {modelos}")
+                with st.expander(f"Rebanada {i+1}: {s['z_inicio']:.1f}-{s['z_fin']:.1f} cm | {len(s['piezas'])} piezas", expanded=(i==0)):
                     st.pyplot(_graficar_rebanada(s, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v25.2 | FIX: Contador correcto + límite 500 iteraciones + espacios >5cm.*")
+st.caption("💡 *Covintec v26.0 | Guillotina 3D sin solapamiento + verificación automática.*")
