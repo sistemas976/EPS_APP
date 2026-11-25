@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v26.1 - ALGORITMO INTELIGENTE + "FILETE"
-- Algoritmo: para cada espacio, coloca la pieza pendiente más grande que quepa
-- Cambia "rebanada" por "filete" en toda la interfaz
-- Mejor aprovechamiento al alternar tipos de piezas
+📦 CALCULADOR EPS WEB v27.0 - MULTI-BLOQUE AUTOMÁTICO
+- Calcula cuántos bloques necesitas automáticamente
+- Distribuye piezas en múltiples bloques mezclando tipos
+- Resumen consolidado + detalle por bloque
+- Estrategia: alterna tipos para mezcla equilibrada
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -116,7 +117,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v26.1: ALGORITMO INTELIGENTE
+# 🔄 MOTOR MIX v27.0: MULTI-BLOQUE AUTOMÁTICO
 # ==========================================
 class Space3D:
     __slots__ = ('x','y','z','w','h','d')
@@ -129,61 +130,71 @@ def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
     dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
-def _pack_3d_inteligente(items_list, block_w, block_h, block_d):
+def _llenar_un_bloque(items_pendientes, block_w, block_h, block_d):
     """
-    Algoritmo inteligente: para cada espacio, coloca la pieza pendiente más grande que quepa.
-    Alterna entre tipos de piezas para mejor aprovechamiento.
+    Llena UN bloque con piezas pendientes.
+    Alterna entre tipos para mezcla equilibrada.
+    Retorna: (piezas_colocadas, items_pendientes_actualizados)
     """
-    # Copia de items con contador de pendientes
-    pendientes = []
-    for item in items_list:
-        pendientes.append({
-            'w': item['w'], 'h': item['h'], 'd': item['d'],
-            'id': item['id'], 'color': item['color'],
-            'qty': item['qty'], 'colocadas': 0
-        })
-    
     placed = []
     spaces = [Space3D(0, 0, 0, block_w, block_h, block_d)]
     
-    # Ordenar espacios por volumen descendente
-    spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+    # Estrategia: rotar entre tipos de piezas
+    tipo_actual = 0
+    max_intentos = 500  # Límite para evitar loops infinitos
+    intentos = 0
     
-    # Mientras haya espacios y piezas pendientes
-    while spaces and any(p['colocadas'] < p['qty'] for p in pendientes):
-        # Tomar el espacio más grande
-        space = spaces.pop(0)
+    while spaces and intentos < max_intentos:
+        intentos += 1
         
-        # Buscar la pieza pendiente más grande que quepa en este espacio
-        best_item = None
+        # Encontrar el siguiente tipo con piezas pendientes
+        tipos_con_pendientes = [i for i, item in enumerate(items_pendientes) if item['pendientes'] > 0]
+        if not tipos_con_pendientes:
+            break
+        
+        # Rotar entre tipos
+        tipo_actual = tipos_con_pendientes[tipo_actual % len(tipos_con_pendientes)]
+        item = items_pendientes[tipo_actual]
+        
+        if item['pendientes'] <= 0:
+            tipo_actual += 1
+            continue
+        
+        # Ordenar espacios por volumen descendente
+        spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+        
+        # Buscar el mejor espacio para esta pieza
+        best_space_idx = -1
         best_orient = None
-        best_volume = -1
+        best_score = float('inf')
         
-        for item in pendientes:
-            if item['colocadas'] >= item['qty']:
-                continue
-            
-            # Probar todas las orientaciones
-            orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
+        orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
+        
+        for i, space in enumerate(spaces):
             for orient in orientaciones:
                 pw, ph, pd = orient
                 if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
-                    vol = pw * ph * pd
-                    if vol > best_volume:
-                        best_volume = vol
-                        best_item = item
+                    # Score: minimizar espacio desperdiciado
+                    wasted = (space.w - pw) + (space.h - ph) + (space.d - pd)
+                    if wasted < best_score:
+                        best_score = wasted
+                        best_space_idx = i
                         best_orient = orient
         
-        if best_item is None:
-            continue  # Ninguna pieza cabe en este espacio
+        if best_space_idx == -1:
+            # Esta pieza no cabe en ningún espacio, probar siguiente tipo
+            tipo_actual += 1
+            continue
         
+        space = spaces.pop(best_space_idx)
         pw, ph, pd = best_orient
+        
         placed.append({
             'x': space.x, 'y': space.y, 'z': space.z,
             'w': pw, 'h': ph, 'd': pd,
-            'id': best_item['id'], 'color': best_item['color']
+            'id': item['id'], 'color': item['color']
         })
-        best_item['colocadas'] += 1
+        item['pendientes'] -= 1
         
         # Dividir espacio restante (Guillotina sin solapamiento)
         rem_w = space.w - pw - KERF_CM
@@ -199,16 +210,50 @@ def _pack_3d_inteligente(items_list, block_w, block_h, block_d):
             spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
                                    pw, ph, rem_d))
         
-        # Reordenar espacios por volumen
-        spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+        # Limitar espacios para rendimiento
+        if len(spaces) > 80:
+            spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+            del spaces[80:]
         
-        # Limitar cantidad de espacios para rendimiento
-        if len(spaces) > 100:
-            del spaces[100:]
+        tipo_actual += 1
     
-    # Contador final
-    placed_count = {item['id']: item['colocadas'] for item in pendientes}
-    return placed, placed_count
+    return placed
+
+def _distribuir_en_multiples_bloques(items_list, block_w, block_h, block_d):
+    """
+    Distribuye todas las piezas en múltiples bloques automáticamente.
+    """
+    # Copia de items con contador de pendientes
+    items_pendientes = []
+    for item in items_list:
+        items_pendientes.append({
+            'w': item['w'], 'h': item['h'], 'd': item['d'],
+            'id': item['id'], 'color': item['color'],
+            'qty': item['qty'], 'pendientes': item['qty']
+        })
+    
+    bloques = []
+    bloque_num = 1
+    
+    # Mientras haya piezas pendientes
+    while any(item['pendientes'] > 0 for item in items_pendientes):
+        placed = _llenar_un_bloque(items_pendientes, block_w, block_h, block_d)
+        
+        if not placed:
+            break  # No se pudo colocar nada más
+        
+        bloques.append({
+            'numero': bloque_num,
+            'piezas': placed,
+            'total_piezas': len(placed)
+        })
+        bloque_num += 1
+        
+        # Límite de seguridad
+        if bloque_num > 100:
+            break
+    
+    return bloques, items_pendientes
 
 def _verificar_no_solapamiento(placed):
     n = len(placed)
@@ -228,7 +273,6 @@ def _verificar_no_solapamiento(placed):
     return conflictos == 0, conflictos
 
 def _agrupar_por_filete(placed):
-    """Agrupa piezas por posición longitudinal (z)."""
     filetes = defaultdict(list)
     for p in placed:
         filetes[round(p['z'], 1)].append(p)
@@ -337,35 +381,49 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
-def _generar_reporte_pdf_mix(filetes, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_colocado):
+def _generar_reporte_pdf_mix(bloques, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_total_colocado):
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
-    vol_bloque = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
-    ef = (vol_colocado / vol_bloque * 100) if vol_bloque > 0 else 0
+    vol_bloque_unitario = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
+    vol_total_bloques = len(bloques) * vol_bloque_unitario
+    ef = (vol_total_colocado / vol_total_bloques * 100) if vol_total_bloques > 0 else 0
+    
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 22)
-    pdf.cell(0, 20, 'Reporte EPS - Mezcla 3D', ln=True, align='C')
+    pdf.cell(0, 20, 'Reporte EPS - Mezcla 3D Multi-Bloque', ln=True, align='C')
     pdf.set_font('Helvetica', '', 13)
-    pdf.cell(0, 10, f'Bloque: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm', ln=True, align='C')
-    pdf.cell(0, 8, f'Piezas: {total_colocadas} de {total_pedidas} | Eficiencia: {ef:.2f}% | Peso: {vol_colocado*densidad:.2f} kg', ln=True, align='C')
+    pdf.cell(0, 10, f'Bloque unitario: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm', ln=True, align='C')
+    pdf.cell(0, 8, f'Total bloques: {len(bloques)}', ln=True, align='C')
+    pdf.cell(0, 8, f'Piezas: {total_colocadas} de {total_pedidas} | Eficiencia global: {ef:.2f}%', ln=True, align='C')
+    pdf.cell(0, 8, f'Peso total: {vol_total_colocado*densidad:.2f} kg', ln=True, align='C')
     pdf.ln(10)
-    pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.cell(0, 10, 'MAPA DE CORTES LONGITUDINALES', ln=True)
-    fig = _graficar_mapa_longitudinal(filetes, ancho_bloque)
-    pdf.image(_fig_to_png(fig, dpi=130), x=10, w=190)
-    plt.close(fig)
-    for i, f in enumerate(filetes):
+    
+    for bloque in bloques:
+        filetes = _agrupar_por_filete(bloque['piezas'])
         pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 14)
-        modelos = ', '.join(sorted(set(p['id'] for p in f['piezas'])))
-        pdf.cell(0, 10, f'FILETE {i+1}: {f["z_inicio"]:.1f} a {f["z_fin"]:.1f} cm', ln=True)
-        pdf.set_font('Helvetica', '', 11)
-        pdf.cell(0, 7, f'Largo corte: {f["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(f["piezas"])}', ln=True)
+        pdf.set_font('Helvetica', 'B', 16)
+        pdf.cell(0, 10, f'BLOQUE {bloque["numero"]} - {bloque["total_piezas"]} piezas', ln=True)
         pdf.ln(5)
-        fig_t = _graficar_filete(f, ancho_bloque)
-        pdf.image(_fig_to_png(fig_t, dpi=120), x=10, w=190)
-        plt.close(fig_t)
+        
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.cell(0, 8, 'Mapa de cortes longitudinales', ln=True)
+        fig = _graficar_mapa_longitudinal(filetes, ancho_bloque)
+        pdf.image(_fig_to_png(fig, dpi=130), x=10, w=190)
+        plt.close(fig)
+        pdf.ln(5)
+        
+        for i, f in enumerate(filetes):
+            pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 14)
+            modelos = ', '.join(sorted(set(p['id'] for p in f['piezas'])))
+            pdf.cell(0, 10, f'FILETE {i+1}: {f["z_inicio"]:.1f} a {f["z_fin"]:.1f} cm', ln=True)
+            pdf.set_font('Helvetica', '', 11)
+            pdf.cell(0, 7, f'Largo: {f["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(f["piezas"])}', ln=True)
+            pdf.ln(5)
+            fig_t = _graficar_filete(f, ancho_bloque)
+            pdf.image(_fig_to_png(fig_t, dpi=120), x=10, w=190)
+            plt.close(fig_t)
+    
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
@@ -373,12 +431,12 @@ def _generar_reporte_pdf_mix(filetes, ancho_bloque, densidad, total_pedidas, tot
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v26.1 - Algoritmo inteligente + Filetes")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v27.0 - Multi-bloque automático")
 
 if not FPDF_DISPONIBLE:
     st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt` para habilitar PDFs.")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Empaquetado 3D)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Multi-Bloque Automático)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -433,8 +491,8 @@ with tab1:
                                        file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
 
 with tab2:
-    st.header("🔀 Empaquetado 3D (Algoritmo Inteligente)")
-    st.markdown("🔹 Para cada espacio disponible, coloca la pieza pendiente más grande que quepa. 🔹 Alterna tipos para mejor aprovechamiento.")
+    st.header("🔀 Empaquetado 3D Multi-Bloque Automático")
+    st.markdown("🔹 **Distribución automática:** calcula cuántos bloques necesitas y distribuye las piezas. 🔹 Mezcla tipos en cada bloque.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -445,9 +503,9 @@ with tab2:
         st.markdown("### 📋 Lista de Pedidos")
         st.caption("💡 Dim1/Dim2/Dim3 = las 3 medidas. El sistema prueba las 6 orientaciones.")
         default_prod = [
-            {'id':'Grande','w':25.0,'h':40.0,'d':40.0,'qty':10,'color':'#3498DB'},
-            {'id':'Larga1','w':2.5,'h':122.0,'d':244.0,'qty':2,'color':'#E74C3C'},
-            {'id':'Larga2','w':2.5,'h':122.0,'d':122.0,'qty':2,'color':'#F39C12'}
+            {'id':'Grande','w':25.0,'h':40.0,'d':40.0,'qty':1000,'color':'#3498DB'},
+            {'id':'Larga1','w':2.5,'h':122.0,'d':244.0,'qty':1000,'color':'#E74C3C'},
+            {'id':'Larga2','w':2.5,'h':122.0,'d':122.0,'qty':200,'color':'#F39C12'}
         ]
         if 'prod_mix' not in st.session_state:
             st.session_state['prod_mix'] = default_prod
@@ -474,15 +532,16 @@ with tab2:
             if st.button("🗑️ Limpiar", use_container_width=True, key="btn_clear_3d"):
                 st.session_state['prod_mix'] = []
                 st.rerun()
-        calc_mix = st.button("🚀 Empaquetar en 3D", type="primary", use_container_width=True, key="btn_mix_3d")
+        calc_mix = st.button("🚀 Distribuir en Bloques", type="primary", use_container_width=True, key="btn_mix_3d")
         if calc_mix:
             st.session_state['mix_3d_calculado'] = True
 
     with col2:
         if st.session_state.get('mix_3d_calculado', False):
-            st.subheader("📊 Resultados del Empaquetado 3D")
+            st.subheader("📊 Resultados Multi-Bloque")
             items_list = []
             total_pedidas = 0
+            vol_total_solicitado = 0
             for row in st.session_state['prod_mix']:
                 try:
                     w, h, d = float(row['w']), float(row['h']), float(row['d'])
@@ -494,52 +553,80 @@ with tab2:
                     continue
                 items_list.append({'w': w, 'h': h, 'd': d, 'id': row['id'], 'color': row['color'], 'qty': qty})
                 total_pedidas += qty
+                vol_total_solicitado += w * h * d * qty
+            
             if not items_list:
                 st.warning("⚠️ No hay piezas válidas."); st.stop()
-
-            placed, placed_count = _pack_3d_inteligente(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
-
-            ok, conflictos = _verificar_no_solapamiento(placed)
-            if not ok:
-                st.error(f"🚨 **ALERTA: {conflictos} piezas se solapan.** El resultado NO es válido.")
-            elif len(placed) <= 800:
-                st.success("✔️ **Verificación OK:** ninguna pieza se solapa. Resultados válidos.")
-
-            filetes = _agrupar_por_filete(placed)
-            total_colocadas = len(placed)
-            vol_colocado = sum(p['w']*p['h']*p['d'] for p in placed) / 1e6
-            vol_bloque = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
-            eficiencia = min((vol_colocado / vol_bloque) * 100, 100.0)
-
-            st.success(f"✅ **Colocadas:** {total_colocadas} de {total_pedidas} | **Eficiencia:** {eficiencia:.2f}%")
-
-            st.markdown("#### 📦 Detalle por tipo:")
+            
+            # Calcular bloques necesarios (estimación)
+            vol_bloque_unitario = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE
+            bloques_estimados = math.ceil(vol_total_solicitado / vol_bloque_unitario)
+            st.info(f"📐 **Estimación:** necesitas ~{bloques_estimados} bloques para colocar todas las piezas")
+            
+            # Distribuir en múltiples bloques
+            with st.spinner(f"Distribuyendo en ~{bloques_estimados} bloques..."):
+                bloques, items_finales = _distribuir_en_multiples_bloques(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
+            
+            # Calcular totales
+            total_colocadas = sum(b['total_piezas'] for b in bloques)
+            vol_total_colocado = sum(sum(p['w']*p['h']*p['d'] for p in b['piezas']) for b in bloques) / 1e6
+            vol_total_bloques = len(bloques) * vol_bloque_unitario / 1e6
+            eficiencia_global = (vol_total_colocado / vol_total_bloques * 100) if vol_total_bloques > 0 else 0
+            
+            st.success(f"✅ **Distribuidas:** {total_colocadas} de {total_pedidas} piezas en **{len(bloques)} bloques** | Eficiencia global: {eficiencia_global:.2f}%")
+            
+            # Detalle por tipo
+            st.markdown("#### 📦 Detalle por tipo de pieza:")
             for item in items_list:
-                c = placed_count.get(item['id'], 0)
-                p = item['qty']
-                (st.success if c == p else st.warning)(f"**{item['id']}** ({item['w']}x{item['h']}x{item['d']}): {c} de {p} colocadas")
-
+                colocadas = sum(1 for b in bloques for p in b['piezas'] if p['id'] == item['id'])
+                pedidas = item['qty']
+                (st.success if colocadas == pedidas else st.warning)(
+                    f"**{item['id']}** ({item['w']}x{item['h']}x{item['d']}): {colocadas} de {pedidas} colocadas"
+                )
+            
             if total_colocadas < total_pedidas:
-                st.info(f"💡 {total_pedidas - total_colocadas} piezas pendientes → se colocarían en un **segundo bloque**.")
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("📦 Piezas Colocadas", total_colocadas)
-            c2.metric("📈 Eficiencia", f"{eficiencia:.2f}%")
-            c3.metric("🧱 Peso Neto", f"{vol_colocado * densidad_mix:.2f} kg")
-
+                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no se pudieron colocar (límite de 100 bloques)")
+            
+            # Métricas globales
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("🧱 Bloques Usados", len(bloques))
+            c2.metric("📦 Piezas Colocadas", total_colocadas)
+            c3.metric("📈 Eficiencia Global", f"{eficiencia_global:.2f}%")
+            c4.metric("🧱 Peso Total", f"{vol_total_colocado * densidad_mix:.2f} kg")
+            
+            # PDF
             if FPDF_DISPONIBLE:
-                pdf_bytes = _generar_reporte_pdf_mix(filetes, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_colocado)
-                st.download_button("📄 Descargar PDF (Mix 3D)", data=pdf_bytes,
-                                   file_name=f"mix_3d_{len(filetes)}filetes.pdf", mime="application/pdf", use_container_width=True)
-
-            st.divider()
-            st.subheader("📏 Mapa de Cortes Longitudinales")
+                pdf_bytes = _generar_reporte_pdf_mix(bloques, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_total_colocado)
+                st.download_button("📄 Descargar PDF (Multi-Bloque)", data=pdf_bytes,
+                                   file_name=f"mix_multibloque_{len(bloques)}bloques.pdf", mime="application/pdf", use_container_width=True)
+            
+            # Selector de bloque
+            if len(bloques) > 1:
+                st.divider()
+                st.subheader("🔍 Ver detalle por bloque")
+                bloque_sel = st.selectbox("Selecciona un bloque:", [f"Bloque {b['numero']} ({b['total_piezas']} piezas)" for b in bloques], key="sel_bloque_detalle")
+                bloque_idx = [f"Bloque {b['numero']} ({b['total_piezas']} piezas)" for b in bloques].index(bloque_sel)
+                bloque = bloques[bloque_idx]
+            else:
+                bloque = bloques[0]
+            
+            filetes = _agrupar_por_filete(bloque['piezas'])
+            
+            # Verificación anti-solapamiento (solo para bloques pequeños)
+            if bloque['total_piezas'] <= 800:
+                ok, conflictos = _verificar_no_solapamiento(bloque['piezas'])
+                if not ok:
+                    st.error(f"🚨 Bloque {bloque['numero']}: {conflictos} piezas se solapan")
+                else:
+                    st.success(f"✔️ Bloque {bloque['numero']}: verificación OK")
+            
+            st.subheader(f"📏 Bloque {bloque['numero']} - Mapa de Cortes")
             st.pyplot(_graficar_mapa_longitudinal(filetes, ancho_mix))
-
-            st.subheader("🔍 Detalle por Filete")
+            
+            st.subheader("🔍 Filetes del bloque")
             for i, f in enumerate(filetes):
                 with st.expander(f"Filete {i+1}: {f['z_inicio']:.1f}-{f['z_fin']:.1f} cm | {len(f['piezas'])} piezas", expanded=(i==0)):
                     st.pyplot(_graficar_filete(f, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v26.1 | Algoritmo inteligente: alterna tipos de piezas para mejor aprovechamiento.*")
+st.caption("💡 *Covintec v27.0 | Multi-bloque automático: distribuye piezas en todos los bloques necesarios.*")
