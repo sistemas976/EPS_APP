@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v25.0 - EMPAQUETADO 3D GUILLOTINA REAL
-- Algoritmo 3D que rellena huecos (offcut utilization).
-- Permite mezclar piezas de diferentes longitudes en el mismo bloque.
-- Plan de corte longitudinal claro (a qué cm cortar).
-- Reportes PDF para Single y Mix.
+📦 CALCULADOR EPS WEB v25.1 - VALIDACIÓN CORREGIDA + 6 ORIENTACIONES
+- Valida correctamente que la pieza quepa (cualquier dimensión en cualquier eje)
+- Prueba las 6 orientaciones posibles de cada pieza
+- Algoritmo 3D Guillotina mejorado
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -13,6 +12,7 @@ import matplotlib.patches as patches
 import math
 import io
 from collections import defaultdict
+from itertools import permutations
 
 try:
     from fpdf import FPDF
@@ -22,13 +22,12 @@ except ImportError:
 
 KERF_CM = 0.2
 ALTO_BLOQUE = 66.0
-ANCHO_BLOQUE_DEF = 126.0 # Se ajustará con el slider
 LARGO_BLOQUE = 506.0
 
 st.set_page_config(page_title="📦 Calculador EPS Covintec", layout="wide")
 
 # ==========================================
-# 🧠 MOTOR SINGLE (Intacto y Probado)
+# 🧠 MOTOR SINGLE (Intacto)
 # ==========================================
 def _calcular_layout(ancho_bloque, alto_bloque, largo_bloque, d1, d2, d3, modo_uniforme=False):
     dims = sorted([float(d1), float(d2), float(d3)], reverse=True)
@@ -117,19 +116,24 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v25.0: EMPAQUETADO 3D GUILLOTINA
+# 🔄 MOTOR MIX v25.1: EMPAQUETADO 3D CON 6 ORIENTACIONES
 # ==========================================
 class Space3D:
     def __init__(self, x, y, z, w, h, d):
-        self.x, self.y, self.z = x, y, z  # Posición
-        self.w, self.h, self.d = w, h, d  # Dimensiones (ancho, alto, largo)
+        self.x, self.y, self.z = x, y, z
+        self.w, self.h, self.d = w, h, d
+
+def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
+    """Verifica si la pieza cabe en el bloque en ALGUNA orientación."""
+    dims_pieza = sorted([w, h, d])
+    dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
+    return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
 def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
     """
     Empaqueta piezas en 3D usando división guillotina.
-    items_list: lista de dicts con 'w', 'h', 'd', 'id', 'color', 'qty'
+    Prueba las 6 orientaciones posibles de cada pieza.
     """
-    # 1. Expandir cantidades y ordenar por volumen descendente (los grandes primero)
     expanded = []
     for item in items_list:
         for _ in range(item['qty']):
@@ -144,24 +148,27 @@ def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
     
     for item in expanded:
         best_space_idx = -1
-        best_rotation = None
+        best_orientation = None
+        best_score = float('inf')
         
-        # Buscar el mejor espacio que acomode la pieza (permitiendo rotar ancho y alto)
+        # Generar las 6 orientaciones posibles
+        orientaciones = list(permutations([item['w'], item['h'], item['d']]))
+        
         for i, space in enumerate(spaces):
-            # Orientación normal
-            if item['w'] <= space.w + 0.01 and item['h'] <= space.h + 0.01 and item['d'] <= space.d + 0.01:
-                best_space_idx = i
-                best_rotation = (item['w'], item['h'], item['d'])
-                break
-            # Orientación rotada (ancho y alto intercambiados)
-            elif item['h'] <= space.w + 0.01 and item['w'] <= space.h + 0.01 and item['d'] <= space.d + 0.01:
-                best_space_idx = i
-                best_rotation = (item['h'], item['w'], item['d'])
-                break
+            for orient in orientaciones:
+                pw, ph, pd = orient
+                # Verificar si cabe en este espacio
+                if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
+                    # Calcular "score": cuánto espacio desperdicia
+                    wasted = space.w * space.h * space.d - pw * ph * pd
+                    if wasted < best_score:
+                        best_score = wasted
+                        best_space_idx = i
+                        best_orientation = orient
         
         if best_space_idx != -1:
             space = spaces.pop(best_space_idx)
-            pw, ph, pd = best_rotation
+            pw, ph, pd = best_orientation
             
             placed.append({
                 'x': space.x, 'y': space.y, 'z': space.z,
@@ -169,38 +176,30 @@ def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
                 'id': item['id'], 'color': item['color']
             })
             
-            # Dividir el espacio restante en 3 nuevos espacios (Guillotina)
-            # 1. Espacio a la derecha (a lo largo del ancho)
+            # Dividir el espacio restante (Guillotina)
             if space.w - pw > KERF_CM:
                 spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
                                       space.w - pw - KERF_CM, space.h, space.d))
-            # 2. Espacio arriba (a lo largo del alto)
             if space.h - ph > KERF_CM:
                 spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
                                       pw, space.h - ph - KERF_CM, space.d))
-            # 3. Espacio al frente (a lo largo del largo)
             if space.d - pd > KERF_CM:
                 spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
                                       space.w, space.h, space.d - pd - KERF_CM))
             
-            # Reordenar espacios: poner los más grandes primero para mejor ajuste (Best Fit)
             spaces.sort(key=lambda s: s.w * s.h * s.d, reverse=True)
             
     return placed, spaces
 
 def _agrupar_por_rebanada(placed, block_w):
-    """Agrupa las piezas colocadas por su posición longitudinal (z) para mostrar el plan de corte."""
     slices = defaultdict(list)
     for p in placed:
-        # Redondear z para agrupar piezas que están en la misma "rebanada" longitudinal
         z_slice = round(p['z'], 1)
         slices[z_slice].append(p)
     
-    # Ordenar rebanadas de inicio a fin del bloque
     sorted_slices = []
     for z in sorted(slices.keys()):
         piezas_en_rebanada = slices[z]
-        # La longitud de esta rebanada es la máxima dimensión 'd' de las piezas en ella
         max_d = max(p['d'] for p in piezas_en_rebanada)
         sorted_slices.append({
             'z_inicio': z,
@@ -211,7 +210,6 @@ def _agrupar_por_rebanada(placed, block_w):
     return sorted_slices
 
 def _graficar_rebanada(slice_data, ancho_bloque):
-    """Dibuja la vista transversal de una rebanada específica."""
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.set_xlim(0, ancho_bloque)
     ax.set_ylim(0, ALTO_BLOQUE)
@@ -234,7 +232,6 @@ def _graficar_rebanada(slice_data, ancho_bloque):
     return fig
 
 def _graficar_mapa_longitudinal(slices, ancho_bloque):
-    """Dibuja el mapa de cortes a lo largo de los 506 cm."""
     fig, ax = plt.subplots(figsize=(15, 3))
     ax.set_xlim(0, LARGO_BLOQUE)
     ax.set_ylim(0, 10)
@@ -242,9 +239,7 @@ def _graficar_mapa_longitudinal(slices, ancho_bloque):
     
     ax.add_patch(patches.Rectangle((0, 0), LARGO_BLOQUE, 10, facecolor='#F0F2F6', edgecolor='#333', lw=2))
     
-    colores_usados = {}
     x_actual = 0
-    
     for s in slices:
         longitud = s['longitud']
         modelos = sorted(set(p['id'] for p in s['piezas']))
@@ -256,11 +251,9 @@ def _graficar_mapa_longitudinal(slices, ancho_bloque):
         fs = 9 if longitud > 40 else 7
         ax.text(x_actual + longitud/2, 5, label, ha='center', va='center', fontsize=fs, fontweight='bold', color='white')
         
-        # Línea de corte
         if x_actual > 0:
             ax.plot([x_actual, x_actual], [0, 10], color='red', ls='-', lw=2, alpha=0.7)
             
-        colores_usados[', '.join(modelos)] = color
         x_actual += longitud + KERF_CM
         
     if x_actual - KERF_CM < LARGO_BLOQUE - 0.5:
@@ -387,7 +380,7 @@ def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, tota
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v25.0 - Empaquetado 3D Guillotina Real")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v25.1 - 6 Orientaciones + Validación Correcta")
 
 if not FPDF_DISPONIBLE:
     st.warning("⚠️ **fpdf2 no está instalado.** Instala con `pip install fpdf2` y agrega a `requirements.txt` para habilitar PDFs.")
@@ -443,12 +436,12 @@ with tab1:
 
 with tab2:
     st.header("🔀 Empaquetado 3D Real (Mezcla de diferentes largos)")
-    st.markdown("🔹 **Algoritmo Guillotina:** Coloca las piezas grandes primero y usa los huecos restantes para las pequeñas. 🔹 Permite rotar piezas para encajar.")
+    st.markdown("🔹 **Algoritmo Guillotina:** Coloca las piezas grandes primero y usa los huecos restantes para las pequeñas. 🔹 Prueba las 6 orientaciones posibles de cada pieza.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("⚙️ Configuración")
-        ancho_mix = st.slider("Ancho Bloque (cm)", 126, 156, 126, step=1, key="slider_mix") # Default 126 para el ejemplo del usuario
+        ancho_mix = st.slider("Ancho Bloque (cm)", 126, 156, 126, step=1, key="slider_mix")
         densidad_mix = st.selectbox("Densidad (kg/m³)", list(range(7, 20)), index=3, key="densidad_mix")
         
         st.markdown("### 📋 Lista de Pedidos")
@@ -465,9 +458,9 @@ with tab2:
             st.session_state['prod_mix'],
             column_config={
                 "id": st.column_config.TextColumn("ID", width="small"),
-                "w": st.column_config.NumberColumn("Ancho (cm)", format="%.2f", step=0.5, width="small"),
-                "h": st.column_config.NumberColumn("Alto (cm)", format="%.2f", step=0.5, width="small"),
-                "d": st.column_config.NumberColumn("Largo (cm)", format="%.1f", step=0.5, width="small"),
+                "w": st.column_config.NumberColumn("Dim1 (cm)", format="%.2f", step=0.5, width="small"),
+                "h": st.column_config.NumberColumn("Dim2 (cm)", format="%.2f", step=0.5, width="small"),
+                "d": st.column_config.NumberColumn("Dim3 (cm)", format="%.1f", step=0.5, width="small"),
                 "qty": st.column_config.NumberColumn("Cant.", format="%d", step=1, width="small"),
                 "color": st.column_config.TextColumn("Color", width="small")
             },
@@ -502,9 +495,12 @@ with tab2:
                     qty = int(row['qty'])
                 except: continue
                 if qty <= 0 or w <= 0 or h <= 0 or d <= 0: continue
-                if d > LARGO_BLOQUE or w > ancho_mix or h > ALTO_BLOQUE:
-                    st.error(f"❌ {row['id']} excede dimensiones del bloque ({ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE})")
+                
+                # ✅ VALIDACIÓN CORREGIDA: verifica si la pieza cabe en ALGUNA orientación
+                if not _pieza_cabe_en_bloque(w, h, d, ancho_mix):
+                    st.error(f"❌ {row['id']} ({w}x{h}x{d} cm) no cabe en el bloque ({ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE} cm) en ninguna orientación")
                     continue
+                    
                 items_list.append({'w': w, 'h': h, 'd': d, 'id': row['id'], 'color': row['color'], 'qty': qty})
                 total_pedidas += qty
 
@@ -522,14 +518,13 @@ with tab2:
             
             st.success(f"✅ **Colocadas:** {total_colocadas} de {total_pedidas} piezas | **Eficiencia:** {eficiencia:.2f}%")
             if total_colocadas < total_pedidas:
-                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no cupieron en el bloque. Considera aumentar el ancho o usar un segundo bloque.")
+                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no cupieron en el bloque. Considera usar un segundo bloque.")
 
             c1, c2, c3 = st.columns(3)
             c1.metric("📦 Piezas Colocadas", total_colocadas)
             c2.metric("📈 Eficiencia Volumétrica", f"{eficiencia:.2f}%")
             c3.metric("🧱 Peso Neto", f"{vol_colocado * densidad_mix:.2f} kg")
 
-            # Botón PDF
             if FPDF_DISPONIBLE:
                 pdf_bytes = _generar_reporte_pdf_mix(slices, ancho_mix, densidad_mix, total_pedidas, total_colocadas)
                 st.download_button("📄 Descargar PDF (Mix 3D)", data=pdf_bytes, file_name=f"mix_3d_{len(slices)}rebanadas.pdf", mime="application/pdf", use_container_width=True)
@@ -547,4 +542,4 @@ with tab2:
                     st.pyplot(_graficar_rebanada(s, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v25.0 | Empaquetado 3D Guillotina: Rellena huecos automáticamente para máxima eficiencia.*")
+st.caption("💡 *Covintec v25.1 | Empaquetado 3D con 6 orientaciones + validación correcta.*")
