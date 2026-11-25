@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v24.1 - COMPLETO Y CORREGIDO
+📦 CALCULADOR EPS WEB v24.2 - PDF PARA SINGLE Y MIX
+- Reporte PDF completo para modo Single (plano + desglose)
+- Reporte PDF completo para modo Mix (bloques + segmentos)
 - Import condicional de fpdf2
-- PDF con BytesIO (sin errores de escritura)
-- Textos sin caracteres especiales (acentos, ñ, m³)
-- Gestión de filas + Reporte PDF completo
-- Persistencia de resultados Mix
+- Textos sin caracteres especiales
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -31,7 +30,7 @@ LARGO_BLOQUE = 506.0
 st.set_page_config(page_title="📦 Calculador EPS Covintec", layout="wide")
 
 # ==========================================
-# 🧠 MOTOR SINGLE (INTACTO)
+# 🧠 MOTOR SINGLE
 # ==========================================
 def _calcular_layout(ancho_bloque, alto_bloque, largo_bloque, d1, d2, d3, modo_uniforme=False):
     dims = sorted([float(d1), float(d2), float(d3)], reverse=True)
@@ -120,7 +119,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v24.1
+# 🔄 MOTOR MIX
 # ==========================================
 def _ffdh_nesting(ancho, alto, piezas):
     if not piezas: return []
@@ -258,7 +257,7 @@ def _graficar_transversal_segmento(s, ancho):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 📄 GENERADOR DE PDF (CORREGIDO)
+# 📄 GENERADORES DE PDF
 # ==========================================
 def _fig_to_png(fig, dpi=150):
     buf = io.BytesIO()
@@ -266,18 +265,151 @@ def _fig_to_png(fig, dpi=150):
     buf.seek(0)
     return buf
 
-def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, modo_bovedilla, total_pedidas, total_colocadas):
-    """Genera PDF completo. Devuelve bytes del PDF."""
+def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_bovedilla, modo_uniforme):
+    """Genera PDF para modo Single. Devuelve bytes."""
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    vg = r['vol_gross_m3']
+    vk = r['vol_kerf_m3']
+    vb = r['vol_bloque_m3']
+    vpr = vg * (factor_perfilado/100) if modo_bovedilla else 0.0
+    vn = vg - vpr
+    vr = max(0, vb - vg - vk)
+    pn, pp, pk, pr = [(v/vb)*100 for v in [vn, vpr, vk, vr]]
+    wn, wp, wk, wr = [(v*densidad) for v in [vn, vpr, vk, vr]]
+    wt = vb * densidad
+    
+    # ---- PORTADA ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 22)
+    pdf.cell(0, 15, 'Reporte EPS - Pieza Unica', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 13)
+    pdf.cell(0, 10, f'Dimensiones pieza: {d1} x {d2} x {d3} cm', ln=True, align='C')
+    pdf.cell(0, 8, f'Ancho bloque: {r["ancho_usado"]:.0f} cm | Alto: {ALTO_BLOQUE:.0f} cm | Largo: {LARGO_BLOQUE:.0f} cm', ln=True, align='C')
+    pdf.cell(0, 8, f'Kerf: {KERF_CM*10:.0f} mm | Densidad: {densidad} kg/m3', ln=True, align='C')
+    pdf.cell(0, 8, f'Estrategia: {"Operativa" if modo_uniforme else "Matematica"}', ln=True, align='C')
+    pdf.ln(10)
+    
+    # Resumen
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, 'RESUMEN', ln=True)
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 7, f'Total de piezas: {r["total"]}', ln=True)
+    pdf.cell(0, 7, f'Capas (cortes longitudinales): {r["capas"]}', ln=True)
+    pdf.cell(0, 7, f'Piezas por capa: {r["ps"]}', ln=True)
+    pdf.cell(0, 7, f'Eficiencia bruta: {(vg/vb)*100:.2f}%', ln=True)
+    pdf.cell(0, 7, f'Volumen bruto: {vg:.4f} m3', ln=True)
+    pdf.cell(0, 7, f'Peso total del bloque: {wt:.2f} kg', ln=True)
+    pdf.ln(5)
+    
+    # ---- PLANO TRANSVERSAL Y LONGITUDINAL ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'PLANOS DE CORTE', ln=True)
+    
+    fig = _graficar_single(r)
+    buf = _fig_to_png(fig, dpi=130)
+    pdf.image(buf, x=10, w=190)
+    plt.close(fig)
+    pdf.ln(5)
+    
+    # ---- DESGLOSE DEL BLOQUE ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'DESGLOSE DEL BLOQUE (100%)', ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 8, f'Volumen total del bloque: {vb:.4f} m3', ln=True)
+    pdf.cell(0, 8, f'Peso total del bloque: {wt:.2f} kg', ln=True)
+    pdf.ln(5)
+    
+    # Tabla de desglose
+    pdf.set_font('Helvetica', 'B', 11)
+    col_w = [50, 25, 35, 35, 35]
+    headers = ['Concepto', '%', 'Volumen (m3)', 'Peso (kg)', 'Descripcion']
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 7, h, border=1, align='C')
+    pdf.ln()
+    
+    pdf.set_font('Helvetica', '', 9)
+    filas = [
+        ('Producto Neto', pn, vn, wn, 'Piezas utiles'),
+        ('Kerf (Hilo)', pk, vk, wk, 'Desgaste hilo'),
+        ('Restante Fisico', pr, vr, wr, 'Residuo'),
+    ]
+    if modo_bovedilla:
+        filas.insert(1, ('Perfilado Bovedilla', pp, vpr, wp, 'CNC'))
+    
+    for concepto, pct, vol, peso, desc in filas:
+        pdf.cell(col_w[0], 6, concepto, border=1)
+        pdf.cell(col_w[1], 6, f'{pct:.2f}%', border=1, align='C')
+        pdf.cell(col_w[2], 6, f'{vol:.4f}', border=1, align='C')
+        pdf.cell(col_w[3], 6, f'{peso:.2f}', border=1, align='C')
+        pdf.cell(col_w[4], 6, desc, border=1)
+        pdf.ln()
+    
+    # Verificacion
+    pdf.ln(8)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Verificacion matematica:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    suma = vn + vpr + vk + vr
+    pdf.cell(0, 7, f'{vn:.4f} + {vpr:.4f} + {vk:.4f} + {vr:.4f} = {suma:.4f} m3', ln=True)
+    pdf.cell(0, 7, f'Volumen del bloque: {vb:.4f} m3', ln=True)
+    pdf.cell(0, 7, f'Diferencia: {abs(suma - vb):.6f} m3 (tolerancia por redondeo)', ln=True)
+    
+    # ---- DETALLE DE CONFIGURACION ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'DETALLE DE CONFIGURACION', ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font('Helvetica', '', 11)
+    cfg = r['config_sec']
+    if r['uniforme']:
+        pdf.cell(0, 7, f'Tipo: Uniforme (rejilla)', ln=True)
+        pdf.cell(0, 7, f'Filas: {cfg["n_h"]} | Columnas: {cfg["n_w"]}', ln=True)
+        pdf.cell(0, 7, f'Dimension pieza en seccion: {cfg["h_p"]:.1f} x {cfg["w_p"]:.1f} cm', ln=True)
+    else:
+        pdf.cell(0, 7, f'Tipo: Mixto (filas combinadas)', ln=True)
+        pdf.cell(0, 7, f'Filas tipo A: {cfg["n_a"]} (altura {cfg["h_a"]:.1f} cm)', ln=True)
+        pdf.cell(0, 7, f'Filas tipo B: {cfg["n_b"]} (altura {cfg["h_b"]:.1f} cm)', ln=True)
+    
+    pdf.ln(3)
+    pdf.cell(0, 7, f'Largo de pieza: {r["lp"]:.1f} cm', ln=True)
+    pdf.cell(0, 7, f'Capas longitudinales: {r["capas"]}', ln=True)
+    pdf.cell(0, 7, f'Piezas por capa: {r["ps"]}', ln=True)
+    pdf.cell(0, 7, f'Total de piezas: {r["total"]}', ln=True)
+    
+    # ---- CONCLUSION ----
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, 'CONCLUSION', ln=True)
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 7, f'Con un bloque de {r["ancho_usado"]:.0f}x{ALTO_BLOQUE:.0f}x{LARGO_BLOQUE:.0f} cm', ln=True)
+    pdf.cell(0, 7, f'se obtienen {r["total"]} piezas de {d1}x{d2}x{d3} cm', ln=True)
+    pdf.cell(0, 7, f'con una eficiencia del {(vg/vb)*100:.2f}%', ln=True)
+    pdf.cell(0, 7, f'y un peso neto de {wn:.2f} kg (densidad {densidad} kg/m3)', ln=True)
+    
+    # Escribir PDF en BytesIO
+    pdf_buffer = io.BytesIO()
+    pdf.output(pdf_buffer)
+    return pdf_buffer.getvalue()
+
+def _generar_reporte_pdf_mix(bloques, ancho_mix, densidad_mix, factor_perfilado, modo_bovedilla, total_pedidas, total_colocadas):
+    """Genera PDF completo para modo Mix. Devuelve bytes."""
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # ---- PORTADA ----
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 22)
-    pdf.cell(0, 20, 'Reporte de Optimizacion EPS', ln=True, align='C')
+    pdf.cell(0, 20, 'Reporte de Optimizacion EPS - Mezcla', ln=True, align='C')
     pdf.set_font('Helvetica', '', 14)
     pdf.cell(0, 10, f'Ancho de bloque: {ancho_mix} cm | Largo: {LARGO_BLOQUE} cm | Alto: {ALTO_BLOQUE} cm', ln=True, align='C')
-    pdf.cell(0, 10, f'Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
+    pdf.cell(0, 10, f'Kerf: {KERF_CM*10:.0f} mm | Densidad: {densidad_mix} kg/m3', ln=True, align='C')
     pdf.ln(10)
     
     vol_total = sum(_volumen_piezas_segmento(s) for b in bloques for s in b['segmentos'])
@@ -399,7 +531,6 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
             pdf.cell(col_w2[j], 6, val, border=1, align='C')
         pdf.ln()
     
-    # ✅ Escribir PDF en BytesIO y devolver bytes
     pdf_buffer = io.BytesIO()
     pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
@@ -408,7 +539,11 @@ def _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado, mod
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | Mix v24.1 + PDF")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v24.2 - PDF Single + Mix")
+
+if not FPDF_DISPONIBLE:
+    st.warning("⚠️ **fpdf2 no está instalado.** Los reportes PDF no estarán disponibles. "
+               "Agrega `fpdf2` a tu `requirements.txt` y reinicia la app.")
 
 tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Nesting FFDH)"])
 
@@ -465,14 +600,25 @@ with tab1:
                 st.markdown(f"⬜ **Restante Físico:** `{pr:.2f}%` → `{vr:.4f} m³` → `{wr:.2f} kg`"); st.progress(min(1.0, pr/100))
                 st.success(f"✅ **Verificación:** {vn:.4f}+{vpr:.4f}+{vk:.4f}+{vr:.4f} ≈ `{vb:.4f} m³`")
                 st.pyplot(_graficar_single(r))
+                
+                # ✅ BOTÓN PDF SINGLE
+                if FPDF_DISPONIBLE:
+                    pdf_bytes = _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_bovedilla, modo_uniforme)
+                    st.download_button(
+                        label="📄 Descargar Reporte PDF (Single)",
+                        data=pdf_bytes,
+                        file_name=f"reporte_single_{int(d1)}x{int(d2)}x{int(d3)}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_pdf_single"
+                    )
+                else:
+                    st.info("📄 **Reporte PDF no disponible.** Instala `fpdf2` para habilitar esta función.")
 
 with tab2:
     st.header("🔀 Optimización de Mezcla (Nesting FFDH)")
     st.markdown("🔹 Mezcla modelos con el mismo largo. 🔹 Divide grupos largos. 🔹 Conteo exacto. 🔹 Reporte PDF.")
-
-    if not FPDF_DISPONIBLE:
-        st.warning("⚠️ **fpdf2 no está instalado.** El reporte PDF no estará disponible. "
-                   "Agrega `fpdf2` a tu archivo `requirements.txt` y reinicia la app.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -571,18 +717,18 @@ with tab2:
                 st.warning(f"⚠️ **Eficiencia baja ({ef_global:.1f}%)**: cantidades pequeñas para llenar bloques de 506 cm. "
                            f"Agrupa pedidos de varios días o aumenta cantidades por modelo.")
 
-            # ✅ Botón PDF (solo si fpdf2 está disponible)
+            # ✅ Botón PDF MIX
             if FPDF_DISPONIBLE:
-                pdf_bytes = _generar_reporte_pdf(bloques, ancho_mix, densidad_mix, factor_perfilado_mix, 
-                                                 modo_bovedilla_mix, total_piezas_pedidas, total_piezas_colocadas)
+                pdf_bytes = _generar_reporte_pdf_mix(bloques, ancho_mix, densidad_mix, factor_perfilado_mix, 
+                                                     modo_bovedilla_mix, total_piezas_pedidas, total_piezas_colocadas)
                 st.download_button(
-                    label="📄 Descargar Reporte PDF",
+                    label="📄 Descargar Reporte PDF (Mix)",
                     data=pdf_bytes,
-                    file_name=f"reporte_eps_{len(bloques)}bloques.pdf",
+                    file_name=f"reporte_mix_{len(bloques)}bloques.pdf",
                     mime="application/pdf",
                     type="primary",
                     use_container_width=True,
-                    key="btn_pdf"
+                    key="btn_pdf_mix"
                 )
             else:
                 st.info("📄 **Reporte PDF no disponible.** Instala `fpdf2` para habilitar esta función.")
@@ -635,4 +781,4 @@ with tab2:
                 st.info("Este bloque no tiene segmentos.")
 
 st.markdown("---")
-st.caption("💡 *Covintec v24.1 | Gestión de filas + Reporte PDF completo.*")
+st.caption("💡 *Covintec v24.2 | Reporte PDF disponible para Single y Mix.*")
