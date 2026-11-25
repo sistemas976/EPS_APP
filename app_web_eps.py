@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v26.0 - FIX SOLAPAMIENTO 3D + VERIFICACIÓN
-- División guillotina sin solapamiento (espacio frente usa footprint de pieza)
-- Verificación anti-solapamiento automática
-- Rendimiento: una pasada por pieza (sin 500 iteraciones globales)
-- Eficiencia garantizada <= 100%
+📦 CALCULADOR EPS WEB v26.1 - ALGORITMO INTELIGENTE + "FILETE"
+- Algoritmo: para cada espacio, coloca la pieza pendiente más grande que quepa
+- Cambia "rebanada" por "filete" en toda la interfaz
+- Mejor aprovechamiento al alternar tipos de piezas
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -117,7 +116,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v26.0: GUILLOTINA 3D SIN SOLAPAMIENTO
+# 🔄 MOTOR MIX v26.1: ALGORITMO INTELIGENTE
 # ==========================================
 class Space3D:
     __slots__ = ('x','y','z','w','h','d')
@@ -130,84 +129,91 @@ def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
     dims_bloque = sorted([ancho_bloque, ALTO_BLOQUE, LARGO_BLOQUE])
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
-def _pack_3d_guillotine(items_list, block_w, block_h, block_d):
+def _pack_3d_inteligente(items_list, block_w, block_h, block_d):
     """
-    Guillotina 3D CORREGIDA: los espacios sobrantes NO se solapan.
-    Una pasada por pieza (rápido y determinista).
+    Algoritmo inteligente: para cada espacio, coloca la pieza pendiente más grande que quepa.
+    Alterna entre tipos de piezas para mejor aprovechamiento.
     """
-    placed_count = defaultdict(int)
+    # Copia de items con contador de pendientes
+    pendientes = []
+    for item in items_list:
+        pendientes.append({
+            'w': item['w'], 'h': item['h'], 'd': item['d'],
+            'id': item['id'], 'color': item['color'],
+            'qty': item['qty'], 'colocadas': 0
+        })
+    
     placed = []
     spaces = [Space3D(0, 0, 0, block_w, block_h, block_d)]
-
-    # Expandir y ordenar por volumen descendente
-    piezas = []
-    for item in items_list:
-        for _ in range(item['qty']):
-            piezas.append(item)
-    piezas.sort(key=lambda x: x['w'] * x['h'] * x['d'], reverse=True)
-
-    for item in piezas:
-        if placed_count[item['id']] >= item['qty']:
-            continue
-
-        orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
-
-        best_leftover = float('inf')
-        best_idx = -1
+    
+    # Ordenar espacios por volumen descendente
+    spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+    
+    # Mientras haya espacios y piezas pendientes
+    while spaces and any(p['colocadas'] < p['qty'] for p in pendientes):
+        # Tomar el espacio más grande
+        space = spaces.pop(0)
+        
+        # Buscar la pieza pendiente más grande que quepa en este espacio
+        best_item = None
         best_orient = None
-
-        for i, space in enumerate(spaces):
+        best_volume = -1
+        
+        for item in pendientes:
+            if item['colocadas'] >= item['qty']:
+                continue
+            
+            # Probar todas las orientaciones
+            orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
             for orient in orientaciones:
                 pw, ph, pd = orient
                 if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
-                    leftover = space.w*space.h*space.d - pw*ph*pd
-                    if leftover < best_leftover:
-                        best_leftover = leftover
-                        best_idx = i
+                    vol = pw * ph * pd
+                    if vol > best_volume:
+                        best_volume = vol
+                        best_item = item
                         best_orient = orient
-
-        if best_idx == -1:
-            continue
-
-        space = spaces.pop(best_idx)
+        
+        if best_item is None:
+            continue  # Ninguna pieza cabe en este espacio
+        
         pw, ph, pd = best_orient
-
         placed.append({
             'x': space.x, 'y': space.y, 'z': space.z,
             'w': pw, 'h': ph, 'd': pd,
-            'id': item['id'], 'color': item['color']
+            'id': best_item['id'], 'color': best_item['color']
         })
-        placed_count[item['id']] += 1
-
-        # ✅ DIVISIÓN GUILLOTINA SIN SOLAPAMIENTO
-        # 1) DERECHA: desde x+pw, toda la altura y profundidad del espacio
+        best_item['colocadas'] += 1
+        
+        # Dividir espacio restante (Guillotina sin solapamiento)
         rem_w = space.w - pw - KERF_CM
         if rem_w > 2:
             spaces.append(Space3D(space.x + pw + KERF_CM, space.y, space.z,
                                    rem_w, space.h, space.d))
-        # 2) ARRIBA: solo el ancho de la pieza (pw), desde y+ph
         rem_h = space.h - ph - KERF_CM
         if rem_h > 2:
             spaces.append(Space3D(space.x, space.y + ph + KERF_CM, space.z,
                                    pw, rem_h, space.d))
-        # 3) FRENTE: solo el footprint de la pieza (pw x ph), desde z+pd
         rem_d = space.d - pd - KERF_CM
         if rem_d > 2:
             spaces.append(Space3D(space.x, space.y, space.z + pd + KERF_CM,
                                    pw, ph, rem_d))
-
+        
+        # Reordenar espacios por volumen
+        spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
+        
         # Limitar cantidad de espacios para rendimiento
-        if len(spaces) > 80:
-            spaces.sort(key=lambda s: s.w*s.h*s.d, reverse=True)
-            del spaces[80:]
-
+        if len(spaces) > 100:
+            del spaces[100:]
+    
+    # Contador final
+    placed_count = {item['id']: item['colocadas'] for item in pendientes}
     return placed, placed_count
 
 def _verificar_no_solapamiento(placed):
-    """Chequeo O(n²) solo si hay pocas piezas. Retorna (ok, num_conflictos)."""
     n = len(placed)
     if n > 800:
-        return True, 0  # Skip para no bloquear UI
+        return True, 0
     conflictos = 0
     for i in range(n):
         a = placed[i]
@@ -221,40 +227,41 @@ def _verificar_no_solapamiento(placed):
                     return False, conflictos
     return conflictos == 0, conflictos
 
-def _agrupar_por_rebanada(placed):
-    slices = defaultdict(list)
+def _agrupar_por_filete(placed):
+    """Agrupa piezas por posición longitudinal (z)."""
+    filetes = defaultdict(list)
     for p in placed:
-        slices[round(p['z'], 1)].append(p)
+        filetes[round(p['z'], 1)].append(p)
     out = []
-    for z in sorted(slices.keys()):
-        piezas = slices[z]
+    for z in sorted(filetes.keys()):
+        piezas = filetes[z]
         max_d = max(p['d'] for p in piezas)
         out.append({'z_inicio': z, 'longitud': max_d, 'z_fin': z + max_d, 'piezas': piezas})
     return out
 
-def _graficar_rebanada(slice_data, ancho_bloque):
+def _graficar_filete(filete_data, ancho_bloque):
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.set_xlim(0, ancho_bloque); ax.set_ylim(0, ALTO_BLOQUE)
     ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.4)
-    modelos = sorted(set(p['id'] for p in slice_data['piezas']))
-    ax.set_title(f"Rebanada {slice_data['z_inicio']:.1f}-{slice_data['z_fin']:.1f} cm (largo {slice_data['longitud']:.1f})\n{', '.join(modelos)}",
+    modelos = sorted(set(p['id'] for p in filete_data['piezas']))
+    ax.set_title(f"Filete {filete_data['z_inicio']:.1f}-{filete_data['z_fin']:.1f} cm (largo {filete_data['longitud']:.1f})\n{', '.join(modelos)}",
                  fontsize=11, fontweight='bold')
-    for p in slice_data['piezas']:
+    for p in filete_data['piezas']:
         ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], fc=p['color'], ec='white', lw=1.5, alpha=0.9))
         if p['w'] > 5 and p['h'] > 3:
             ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], ha='center', va='center', c='white', fontweight='bold', fontsize=8)
     ax.set_xlabel("Ancho (cm)"); ax.set_ylabel("Alto (cm)")
     plt.tight_layout(); return fig
 
-def _graficar_mapa_longitudinal(slices, ancho_bloque):
+def _graficar_mapa_longitudinal(filetes, ancho_bloque):
     fig, ax = plt.subplots(figsize=(15, 3))
     ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(0, 10); ax.axis('off')
     ax.add_patch(patches.Rectangle((0, 0), LARGO_BLOQUE, 10, facecolor='#F0F2F6', edgecolor='#333', lw=2))
     x_actual = 0
-    for s in slices:
-        longitud = s['longitud']
-        modelos = sorted(set(p['id'] for p in s['piezas']))
-        color = s['piezas'][0]['color']
+    for f in filetes:
+        longitud = f['longitud']
+        modelos = sorted(set(p['id'] for p in f['piezas']))
+        color = f['piezas'][0]['color']
         ax.add_patch(patches.Rectangle((x_actual, 0), longitud, 10, facecolor=color, alpha=0.85, edgecolor='white', lw=2))
         fs = 9 if longitud > 40 else 7
         ax.text(x_actual + longitud/2, 5, f"{', '.join(modelos)}\n{longitud:.1f} cm",
@@ -330,7 +337,7 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
-def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_colocado):
+def _generar_reporte_pdf_mix(filetes, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_colocado):
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
     vol_bloque = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
@@ -345,18 +352,18 @@ def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, tota
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 16)
     pdf.cell(0, 10, 'MAPA DE CORTES LONGITUDINALES', ln=True)
-    fig = _graficar_mapa_longitudinal(slices, ancho_bloque)
+    fig = _graficar_mapa_longitudinal(filetes, ancho_bloque)
     pdf.image(_fig_to_png(fig, dpi=130), x=10, w=190)
     plt.close(fig)
-    for i, s in enumerate(slices):
+    for i, f in enumerate(filetes):
         pdf.add_page()
         pdf.set_font('Helvetica', 'B', 14)
-        modelos = ', '.join(sorted(set(p['id'] for p in s['piezas'])))
-        pdf.cell(0, 10, f'REBANADA {i+1}: {s["z_inicio"]:.1f} a {s["z_fin"]:.1f} cm', ln=True)
+        modelos = ', '.join(sorted(set(p['id'] for p in f['piezas'])))
+        pdf.cell(0, 10, f'FILETE {i+1}: {f["z_inicio"]:.1f} a {f["z_fin"]:.1f} cm', ln=True)
         pdf.set_font('Helvetica', '', 11)
-        pdf.cell(0, 7, f'Largo corte: {s["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(s["piezas"])}', ln=True)
+        pdf.cell(0, 7, f'Largo corte: {f["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(f["piezas"])}', ln=True)
         pdf.ln(5)
-        fig_t = _graficar_rebanada(s, ancho_bloque)
+        fig_t = _graficar_filete(f, ancho_bloque)
         pdf.image(_fig_to_png(fig_t, dpi=120), x=10, w=190)
         plt.close(fig_t)
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
@@ -366,7 +373,7 @@ def _generar_reporte_pdf_mix(slices, ancho_bloque, densidad, total_pedidas, tota
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v26.0 - FIX solapamiento + verificación")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v26.1 - Algoritmo inteligente + Filetes")
 
 if not FPDF_DISPONIBLE:
     st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt` para habilitar PDFs.")
@@ -426,8 +433,8 @@ with tab1:
                                        file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
 
 with tab2:
-    st.header("🔀 Empaquetado 3D (Guillotina sin solapamiento)")
-    st.markdown("🔹 Coloca piezas grandes primero y rellena huecos con las pequeñas. 🔹 Verificación automática anti-solapamiento.")
+    st.header("🔀 Empaquetado 3D (Algoritmo Inteligente)")
+    st.markdown("🔹 Para cada espacio disponible, coloca la pieza pendiente más grande que quepa. 🔹 Alterna tipos para mejor aprovechamiento.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -490,16 +497,15 @@ with tab2:
             if not items_list:
                 st.warning("⚠️ No hay piezas válidas."); st.stop()
 
-            placed, placed_count = _pack_3d_guillotine(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
+            placed, placed_count = _pack_3d_inteligente(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE)
 
-            # ✅ VERIFICACIÓN ANTI-SOLAPAMIENTO
             ok, conflictos = _verificar_no_solapamiento(placed)
             if not ok:
-                st.error(f"🚨 **ALERTA: {conflictos} piezas se solapan.** El resultado NO es válido. Reporta el caso.")
+                st.error(f"🚨 **ALERTA: {conflictos} piezas se solapan.** El resultado NO es válido.")
             elif len(placed) <= 800:
-                st.success("✔️ **Verificación OK:** ninguna pieza se solapa con otra. Resultados válidos.")
+                st.success("✔️ **Verificación OK:** ninguna pieza se solapa. Resultados válidos.")
 
-            slices = _agrupar_por_rebanada(placed)
+            filetes = _agrupar_por_filete(placed)
             total_colocadas = len(placed)
             vol_colocado = sum(p['w']*p['h']*p['d'] for p in placed) / 1e6
             vol_bloque = ancho_mix * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
@@ -522,18 +528,18 @@ with tab2:
             c3.metric("🧱 Peso Neto", f"{vol_colocado * densidad_mix:.2f} kg")
 
             if FPDF_DISPONIBLE:
-                pdf_bytes = _generar_reporte_pdf_mix(slices, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_colocado)
+                pdf_bytes = _generar_reporte_pdf_mix(filetes, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_colocado)
                 st.download_button("📄 Descargar PDF (Mix 3D)", data=pdf_bytes,
-                                   file_name=f"mix_3d_{len(slices)}rebanadas.pdf", mime="application/pdf", use_container_width=True)
+                                   file_name=f"mix_3d_{len(filetes)}filetes.pdf", mime="application/pdf", use_container_width=True)
 
             st.divider()
             st.subheader("📏 Mapa de Cortes Longitudinales")
-            st.pyplot(_graficar_mapa_longitudinal(slices, ancho_mix))
+            st.pyplot(_graficar_mapa_longitudinal(filetes, ancho_mix))
 
-            st.subheader("🔍 Detalle por Rebanada")
-            for i, s in enumerate(slices):
-                with st.expander(f"Rebanada {i+1}: {s['z_inicio']:.1f}-{s['z_fin']:.1f} cm | {len(s['piezas'])} piezas", expanded=(i==0)):
-                    st.pyplot(_graficar_rebanada(s, ancho_mix))
+            st.subheader("🔍 Detalle por Filete")
+            for i, f in enumerate(filetes):
+                with st.expander(f"Filete {i+1}: {f['z_inicio']:.1f}-{f['z_fin']:.1f} cm | {len(f['piezas'])} piezas", expanded=(i==0)):
+                    st.pyplot(_graficar_filete(f, ancho_mix))
 
 st.markdown("---")
-st.caption("💡 *Covintec v26.0 | Guillotina 3D sin solapamiento + verificación automática.*")
+st.caption("💡 *Covintec v26.1 | Algoritmo inteligente: alterna tipos de piezas para mejor aprovechamiento.*")
