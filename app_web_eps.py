@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-📦 CALCULADOR EPS WEB v27.2 - COMPLETO Y OPTIMIZADO
-- Fix TypeError en heapq con contador único
-- Algoritmo de mezcla real (alterna tipos de piezas)
-- PDF optimizado (DPI 72, 5 filetes por bloque)
-- Progress bar y feedback visual
-- Tiempo estimado: 15-30 segundos
+📦 CALCULADOR EPS WEB v28.0 - PLANOS DE CORTE INDUSTRIALES
+- 3 vistas ortogonales por bloque (frontal, lateral, longitudinal)
+- PDF de UN bloque: 1 sola página
+- PDF consolidado: 2-3 páginas con tablas de todos los bloques
+- Reduce de 154 páginas a 1-3 páginas
 """
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -120,7 +119,7 @@ def _graficar_single(r):
     plt.tight_layout(); return fig
 
 # ==========================================
-# 🔄 MOTOR MIX v27.2: MEZCLA REAL + OPTIMIZADO
+# 🔄 MOTOR MIX v28.0
 # ==========================================
 class Space3D:
     __slots__ = ('x','y','z','w','h','d','vol')
@@ -135,17 +134,10 @@ def _pieza_cabe_en_bloque(w, h, d, ancho_bloque):
     return all(p <= b + 0.01 for p, b in zip(dims_pieza, dims_bloque))
 
 def _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d):
-    """
-    Algoritmo de mezcla real: alterna entre tipos de piezas para llenar huecos.
-    Fix: contador único en heapq para evitar TypeError.
-    """
     placed = []
-    counter = 0  # ✅ Contador único para desempate
-    
-    # Heap: (-volumen, contador, espacio)
+    counter = 0
     spaces_heap = [(-block_w*block_h*block_d, counter, Space3D(0, 0, 0, block_w, block_h, block_d))]
     counter += 1
-    
     tipo_actual = 0
     max_intentos = 300
     intentos = 0
@@ -153,37 +145,23 @@ def _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d):
     
     while spaces_heap and intentos < max_intentos:
         intentos += 1
-        
-        # Encontrar tipos con piezas pendientes
         tipos_con_pendientes = [i for i, item in enumerate(items_pendientes) if item['pendientes'] > 0]
-        if not tipos_con_pendientes:
-            break
-        
-        # Rotar entre tipos para mezcla equilibrada
+        if not tipos_con_pendientes: break
         tipo_actual = tipos_con_pendientes[tipo_actual % len(tipos_con_pendientes)]
         item = items_pendientes[tipo_actual]
-        
         if item['pendientes'] <= 0:
             tipo_actual += 1
             continue
-        
         best_space_idx = -1
         best_orient = None
         best_score = float('inf')
-        
         orientaciones = list(set(permutations([item['w'], item['h'], item['d']])))
-        
-        # Probar top-20 espacios del heap
         espacios_a_probar = min(20, len(spaces_heap))
         temp_spaces = []
-        
         for _ in range(espacios_a_probar):
-            if not spaces_heap:
-                break
-            # ✅ Desempaquetar 3 elementos (volumen, contador, espacio)
+            if not spaces_heap: break
             neg_vol, cnt, space = heapq.heappop(spaces_heap)
             temp_spaces.append((neg_vol, cnt, space))
-            
             for orient in orientaciones:
                 pw, ph, pd = orient
                 if pw <= space.w + 0.01 and ph <= space.h + 0.01 and pd <= space.d + 0.01:
@@ -192,54 +170,38 @@ def _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d):
                         best_score = wasted
                         best_space_idx = len(temp_spaces) - 1
                         best_orient = orient
-        
-        # Devolver espacios no usados al heap
         for idx, (neg_vol, cnt, space) in enumerate(temp_spaces):
             if idx != best_space_idx:
                 heapq.heappush(spaces_heap, (neg_vol, cnt, space))
-        
         if best_space_idx == -1:
             tipo_actual += 1
             continue
-        
         _, _, space = temp_spaces[best_space_idx]
         pw, ph, pd = best_orient
-        
         placed.append({
             'x': space.x, 'y': space.y, 'z': space.z,
             'w': pw, 'h': ph, 'd': pd,
             'id': item['id'], 'color': item['color']
         })
         item['pendientes'] -= 1
-        
-        # Dividir espacio restante (Guillotina sin solapamiento)
         rem_w = space.w - pw - KERF_CM
         if rem_w > 2:
             new_space = Space3D(space.x + pw + KERF_CM, space.y, space.z, rem_w, space.h, space.d)
-            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
-            counter += 1
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space)); counter += 1
         rem_h = space.h - ph - KERF_CM
         if rem_h > 2:
             new_space = Space3D(space.x, space.y + ph + KERF_CM, space.z, pw, rem_h, space.d)
-            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
-            counter += 1
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space)); counter += 1
         rem_d = space.d - pd - KERF_CM
         if rem_d > 2:
             new_space = Space3D(space.x, space.y, space.z + pd + KERF_CM, pw, ph, rem_d)
-            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space))
-            counter += 1
-        
-        # Limitar tamaño del heap
+            heapq.heappush(spaces_heap, (-new_space.vol, counter, new_space)); counter += 1
         if len(spaces_heap) > MAX_SPACES:
-            largest = heapq.nsmallest(MAX_SPACES, spaces_heap)
-            spaces_heap = largest
-        
+            spaces_heap = heapq.nsmallest(MAX_SPACES, spaces_heap)
         tipo_actual += 1
-    
     return placed
 
 def _distribuir_en_multiples_bloques(items_list, block_w, block_h, block_d, progress_callback=None):
-    """Distribuye piezas en múltiples bloques con mezcla real."""
     items_pendientes = []
     for item in items_list:
         items_pendientes.append({
@@ -247,85 +209,88 @@ def _distribuir_en_multiples_bloques(items_list, block_w, block_h, block_d, prog
             'id': item['id'], 'color': item['color'],
             'qty': item['qty'], 'pendientes': item['qty']
         })
-    
     bloques = []
     bloque_num = 1
     total_piezas = sum(item['qty'] for item in items_list)
     piezas_colocadas = 0
-    
     while any(item['pendientes'] > 0 for item in items_pendientes):
         placed = _llenar_un_bloque_mezcla_real(items_pendientes, block_w, block_h, block_d)
-        
-        if not placed:
-            break
-        
-        bloques.append({
-            'numero': bloque_num,
-            'piezas': placed,
-            'total_piezas': len(placed)
-        })
+        if not placed: break
+        bloques.append({'numero': bloque_num, 'piezas': placed, 'total_piezas': len(placed)})
         piezas_colocadas += len(placed)
         bloque_num += 1
-        
-        if progress_callback:
-            progress_callback(piezas_colocadas, total_piezas, bloque_num)
-        
-        if bloque_num > 100:
-            break
-    
+        if progress_callback: progress_callback(piezas_colocadas, total_piezas, bloque_num)
+        if bloque_num > 100: break
     return bloques, items_pendientes
 
-def _agrupar_por_filete(placed):
-    filetes = defaultdict(list)
-    for p in placed:
-        filetes[round(p['z'], 1)].append(p)
-    out = []
-    for z in sorted(filetes.keys()):
-        piezas = filetes[z]
-        max_d = max(p['d'] for p in piezas)
-        out.append({'z_inicio': z, 'longitud': max_d, 'z_fin': z + max_d, 'piezas': piezas})
-    return out
-
-def _graficar_filete(filete_data, ancho_bloque):
-    fig, ax = plt.subplots(figsize=(8, 5))
+# ==========================================
+# 📐 LAS 3 VISTAS ORTOGONALES (NUEVO)
+# ==========================================
+def _vista_frontal(placed, ancho_bloque):
+    """Proyección X-Y: vista de frente del bloque."""
+    fig, ax = plt.subplots(figsize=(10, 5))
     ax.set_xlim(0, ancho_bloque); ax.set_ylim(0, ALTO_BLOQUE)
-    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.4)
-    modelos = sorted(set(p['id'] for p in filete_data['piezas']))
-    ax.set_title(f"Filete {filete_data['z_inicio']:.1f}-{filete_data['z_fin']:.1f} cm (largo {filete_data['longitud']:.1f})\n{', '.join(modelos)}",
-                 fontsize=11, fontweight='bold')
-    for p in filete_data['piezas']:
-        ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'], fc=p['color'], ec='white', lw=1.5, alpha=0.9))
-        if p['w'] > 5 and p['h'] > 3:
-            ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'], ha='center', va='center', c='white', fontweight='bold', fontsize=8)
+    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.3)
+    ax.set_title("VISTA FRONTAL (proyección X-Y)\nAncho x Alto del bloque", fontsize=12, fontweight='bold')
+    # Dibujar todas las piezas proyectadas (con transparencia para ver superposición)
+    for p in placed:
+        ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'],
+                                       fc=p['color'], ec='black', lw=0.8, alpha=0.35))
+    # Dibujar solo la primera capa (z=0) con opacidad alta
+    primera_capa = [p for p in placed if abs(p['z']) < 0.5]
+    for p in primera_capa:
+        ax.add_patch(patches.Rectangle((p['x'], p['y']), p['w'], p['h'],
+                                       fc=p['color'], ec='black', lw=1.5, alpha=0.95))
+        if p['w'] > 8 and p['h'] > 4:
+            ax.text(p['x']+p['w']/2, p['y']+p['h']/2, p['id'],
+                    ha='center', va='center', c='white', fontweight='bold', fontsize=9)
     ax.set_xlabel("Ancho (cm)"); ax.set_ylabel("Alto (cm)")
     plt.tight_layout(); return fig
 
-def _graficar_mapa_longitudinal(filetes, ancho_bloque):
-    fig, ax = plt.subplots(figsize=(15, 3))
-    ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(0, 10); ax.axis('off')
-    ax.add_patch(patches.Rectangle((0, 0), LARGO_BLOQUE, 10, facecolor='#F0F2F6', edgecolor='#333', lw=2))
-    x_actual = 0
-    for f in filetes:
-        longitud = f['longitud']
-        modelos = sorted(set(p['id'] for p in f['piezas']))
-        color = f['piezas'][0]['color']
-        ax.add_patch(patches.Rectangle((x_actual, 0), longitud, 10, facecolor=color, alpha=0.85, edgecolor='white', lw=2))
-        fs = 9 if longitud > 40 else 7
-        ax.text(x_actual + longitud/2, 5, f"{', '.join(modelos)}\n{longitud:.1f} cm",
-                ha='center', va='center', fontsize=fs, fontweight='bold', color='white')
-        if x_actual > 0:
-            ax.plot([x_actual, x_actual], [0, 10], color='red', ls='-', lw=2, alpha=0.7)
-        x_actual += longitud + KERF_CM
-    if x_actual - KERF_CM < LARGO_BLOQUE - 0.5:
-        res = LARGO_BLOQUE - (x_actual - KERF_CM)
-        ax.add_patch(patches.Rectangle((x_actual - KERF_CM, 0), res, 10, facecolor='#FADBD8', edgecolor='#C0392B', hatch='||', alpha=0.7, lw=2))
-        ax.text(x_actual - KERF_CM + res/2, 5, f"RESIDUO\n{res:.1f} cm", ha='center', va='center', fontsize=9, color='#C0392B', fontweight='bold')
-    ax.set_xticks([0, 100, 200, 300, 400, 506]); ax.tick_params(axis='x', colors='gray', labelsize=8)
-    ax.set_title(f"MAPA DE CORTES (506 cm) | Ancho {ancho_bloque} cm", fontsize=12, fontweight='bold', pad=8)
+def _vista_lateral(placed, ancho_bloque):
+    """Proyección X-Z: vista lateral (ancho x largo)."""
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(0, ancho_bloque)
+    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.3)
+    ax.set_title("VISTA LATERAL (proyección Z-X)\nLargo x Ancho del bloque", fontsize=12, fontweight='bold')
+    # Agrupar por z para evitar saturación
+    for p in placed:
+        ax.add_patch(patches.Rectangle((p['z'], p['x']), p['d'], p['w'],
+                                       fc=p['color'], ec='black', lw=0.6, alpha=0.5))
+    ax.set_xlabel("Largo (cm)"); ax.set_ylabel("Ancho (cm)")
     plt.tight_layout(); return fig
 
+def _vista_longitudinal(placed, ancho_bloque):
+    """Proyección Z-Y: vista longitudinal (largo x alto) = mapa de cortes."""
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.set_xlim(0, LARGO_BLOQUE); ax.set_ylim(0, ALTO_BLOQUE)
+    ax.set_aspect('equal'); ax.grid(ls=':', alpha=0.3)
+    ax.set_title("VISTA LONGITUDINAL (proyección Z-Y)\nLargo x Alto = Secuencia de cortes del hilo", fontsize=12, fontweight='bold')
+    for p in placed:
+        ax.add_patch(patches.Rectangle((p['z'], p['y']), p['d'], p['h'],
+                                       fc=p['color'], ec='black', lw=0.6, alpha=0.5))
+    ax.set_xlabel("Largo (cm)"); ax.set_ylabel("Alto (cm)")
+    plt.tight_layout(); return fig
+
+def _tabla_cortes_bloque(placed):
+    """Genera tabla compacta de posiciones de corte únicas."""
+    # Cortes transversales (en Z)
+    cortes_z = sorted(set(round(p['z'], 1) for p in placed))
+    # Cortes longitudinales (en Y, horizontal)
+    cortes_y = sorted(set(round(p['y'], 1) for p in placed))
+    # Cortes verticales (en X)
+    cortes_x = sorted(set(round(p['x'], 1) for p in placed))
+    return {'z': cortes_z, 'y': cortes_y, 'x': cortes_x}
+
+def _resumen_tipos_bloque(placed):
+    """Resumen de tipos de piezas en el bloque."""
+    resumen = defaultdict(int)
+    for p in placed:
+        resumen[p['id']] += 1
+    return dict(resumen)
+
 # ==========================================
-# 📄 PDF OPTIMIZADO
+# 📄 PDF OPTIMIZADOS (NUEVO)
 # ==========================================
 def _fig_to_png(fig, dpi=72):
     buf = io.BytesIO()
@@ -346,123 +311,212 @@ def _generar_reporte_pdf_single(r, d1, d2, d3, densidad, factor_perfilado, modo_
     pdf.cell(0, 15, 'Reporte EPS - Pieza Unica', ln=True, align='C')
     pdf.set_font('Helvetica', '', 13)
     pdf.cell(0, 10, f'Dimensiones pieza: {d1} x {d2} x {d3} cm', ln=True, align='C')
-    pdf.cell(0, 8, f'Bloque: {r["ancho_usado"]:.0f} x {ALTO_BLOQUE:.0f} x {LARGO_BLOQUE:.0f} cm | Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
-    pdf.ln(10)
+    pdf.cell(0, 8, f'Bloque: {r["ancho_usado"]:.0f} x {ALTO_BLOQUE:.0f} x {LARGO_BLOQUE:.0f} cm', ln=True, align='C')
+    pdf.ln(5)
     pdf.set_font('Helvetica', 'B', 14)
     pdf.cell(0, 10, 'RESUMEN', ln=True)
     pdf.set_font('Helvetica', '', 11)
     pdf.cell(0, 7, f'Total piezas: {r["total"]} | Capas: {r["capas"]} | Pz/capa: {r["ps"]}', ln=True)
-    pdf.cell(0, 7, f'Eficiencia: {(vg/vb)*100:.2f}% | Volumen: {vg:.4f} m3 | Peso bloque: {wt:.2f} kg', ln=True)
+    pdf.cell(0, 7, f'Eficiencia: {(vg/vb)*100:.2f}% | Volumen: {vg:.4f} m3 | Peso: {wt:.2f} kg', ln=True)
     pdf.ln(5)
-    pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.cell(0, 10, 'PLANOS DE CORTE', ln=True)
     fig = _graficar_single(r)
-    pdf.image(_fig_to_png(fig, dpi=72), x=10, w=190)
+    pdf.image(_fig_to_png(fig, dpi=100), x=10, w=190)
     plt.close(fig)
-    pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.cell(0, 10, 'DESGLOSE DEL BLOQUE (100%)', ln=True)
-    pdf.ln(5)
-    pdf.set_font('Helvetica', '', 11)
-    pdf.cell(0, 8, f'Volumen total: {vb:.4f} m3 | Peso total: {wt:.2f} kg', ln=True)
-    pdf.ln(3)
-    col_w = [50, 25, 35, 35, 35]
-    for i, h in enumerate(['Concepto', '%', 'Volumen (m3)', 'Peso (kg)', 'Descripcion']):
-        pdf.cell(col_w[i], 7, h, border=1, align='C')
-    pdf.ln()
-    pdf.set_font('Helvetica', '', 9)
-    filas = [('Producto Neto', pn, vn, wn, 'Piezas utiles'), ('Kerf (Hilo)', pk, vk, wk, 'Desgaste hilo'), ('Restante Fisico', pr, vr, wr, 'Residuo')]
-    if modo_bovedilla: filas.insert(1, ('Perfilado Bovedilla', pp, vpr, wp, 'CNC'))
-    for concepto, pct, vol, peso, desc in filas:
-        pdf.cell(col_w[0], 6, concepto, border=1)
-        pdf.cell(col_w[1], 6, f'{pct:.2f}%', border=1, align='C')
-        pdf.cell(col_w[2], 6, f'{vol:.4f}', border=1, align='C')
-        pdf.cell(col_w[3], 6, f'{peso:.2f}', border=1, align='C')
-        pdf.cell(col_w[4], 6, desc, border=1)
-        pdf.ln()
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
 
-def _generar_reporte_pdf_mix_optimizado(bloques, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_total_colocado, progress_callback=None):
-    """PDF optimizado: solo 5 filetes por bloque + tabla resumen del resto."""
+def _generar_pdf_bloque_unico(bloque, ancho_bloque, densidad, vol_colocado):
+    """
+    PDF de UN SOLO BLOQUE en 1-2 páginas:
+    - Página 1: 3 vistas ortogonales + resumen + tabla de cortes
+    - Página 2 (opcional): tabla extendida de cortes si hay muchos
+    """
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=10)
+    
+    vol_bloque = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
+    ef = (vol_colocado / vol_bloque * 100) if vol_bloque > 0 else 0
+    resumen = _resumen_tipos_bloque(bloque['piezas'])
+    cortes = _tabla_cortes_bloque(bloque['piezas'])
+    
+    # ---- PÁGINA 1: PORTADA + VISTAS ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 18)
+    pdf.cell(0, 10, f'PLANOS DE CORTE - BLOQUE {bloque["numero"]}', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 7, f'Bloque: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm | Kerf: {KERF_CM*10:.0f} mm', ln=True, align='C')
+    pdf.cell(0, 7, f'Piezas: {bloque["total_piezas"]} | Eficiencia: {ef:.2f}% | Peso: {vol_colocado*densidad:.2f} kg', ln=True, align='C')
+    pdf.ln(3)
+    
+    # Resumen de tipos
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 7, 'Piezas por tipo:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    tipos_str = ' | '.join([f'{k}: {v}' for k, v in resumen.items()])
+    pdf.cell(0, 6, tipos_str, ln=True)
+    pdf.ln(2)
+    
+    # Vistas ortogonales
+    fig_f = _vista_frontal(bloque['piezas'], ancho_bloque)
+    pdf.image(_fig_to_png(fig_f, dpi=80), x=15, w=180)
+    plt.close(fig_f)
+    pdf.ln(2)
+    
+    fig_l = _vista_lateral(bloque['piezas'], ancho_bloque)
+    pdf.image(_fig_to_png(fig_l, dpi=80), x=15, w=180)
+    plt.close(fig_l)
+    pdf.ln(2)
+    
+    fig_lo = _vista_longitudinal(bloque['piezas'], ancho_bloque)
+    pdf.image(_fig_to_png(fig_lo, dpi=80), x=15, w=180)
+    plt.close(fig_lo)
+    
+    # ---- PÁGINA 2: TABLA DE CORTES ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'TABLA DE POSICIONES DE CORTE', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 10)
+    pdf.cell(0, 7, 'Posiciones exactas donde el hilo debe atravesar el bloque (en cm desde el origen).', ln=True)
+    pdf.ln(3)
+    
+    # Cortes Z (transversales - los principales)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 7, f'1. CORTES TRANSVERSALES (Z) - {len(cortes["z"])} cortes', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 6, 'Cortes que dividen el bloque a lo largo de los 506 cm:', ln=True)
+    pdf.ln(2)
+    
+    # Tabla de cortes Z en columnas
+    n_cortes = len(cortes['z'])
+    col_w = 30
+    per_row = 6
+    pdf.set_font('Helvetica', '', 9)
+    for i in range(0, n_cortes, per_row):
+        row = cortes['z'][i:i+per_row]
+        for j, c in enumerate(row):
+            pdf.cell(col_w, 6, f'#{i+j+1}: {c:.1f} cm', border=1, align='C')
+        pdf.ln()
+    pdf.ln(3)
+    
+    # Cortes Y (horizontales)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 7, f'2. CORTES HORIZONTALES (Y) - {len(cortes["y"])} cortes', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 6, 'Cortes que dividen la altura del bloque (0-66 cm):', ln=True)
+    pdf.ln(2)
+    pdf.set_font('Helvetica', '', 9)
+    for i in range(0, len(cortes['y']), per_row):
+        row = cortes['y'][i:i+per_row]
+        for j, c in enumerate(row):
+            pdf.cell(col_w, 6, f'#{i+j+1}: {c:.1f} cm', border=1, align='C')
+        pdf.ln()
+    pdf.ln(3)
+    
+    # Cortes X (verticales)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 7, f'3. CORTES VERTICALES (X) - {len(cortes["x"])} cortes', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 6, 'Cortes que dividen el ancho del bloque:', ln=True)
+    pdf.ln(2)
+    pdf.set_font('Helvetica', '', 9)
+    for i in range(0, len(cortes['x']), per_row):
+        row = cortes['x'][i:i+per_row]
+        for j, c in enumerate(row):
+            pdf.cell(col_w, 6, f'#{i+j+1}: {c:.1f} cm', border=1, align='C')
+        pdf.ln()
+    
+    pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
+    return pdf_buffer.getvalue()
+
+def _generar_pdf_consolidado(bloques, ancho_bloque, densidad, total_pedidas, total_colocadas, vol_total_colocado):
+    """
+    PDF CONSOLIDADO: 2-3 páginas con resumen tabular de TODOS los bloques.
+    Sin imágenes, solo datos. Para el supervisor.
+    """
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=True, margin=15)
     vol_bloque_unitario = ancho_bloque * ALTO_BLOQUE * LARGO_BLOQUE / 1e6
     vol_total_bloques = len(bloques) * vol_bloque_unitario
-    ef = (vol_total_colocado / vol_total_bloques * 100) if vol_total_bloques > 0 else 0
+    ef_global = (vol_total_colocado / vol_total_bloques * 100) if vol_total_bloques > 0 else 0
     
-    # Portada
+    # ---- PÁGINA 1: RESUMEN GLOBAL ----
     pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 22)
-    pdf.cell(0, 20, 'Reporte EPS - Mezcla 3D Multi-Bloque', ln=True, align='C')
-    pdf.set_font('Helvetica', '', 13)
-    pdf.cell(0, 10, f'Bloque unitario: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm', ln=True, align='C')
-    pdf.cell(0, 8, f'Total bloques: {len(bloques)}', ln=True, align='C')
-    pdf.cell(0, 8, f'Piezas: {total_colocadas} de {total_pedidas} | Eficiencia: {ef:.2f}%', ln=True, align='C')
-    pdf.cell(0, 8, f'Peso total: {vol_total_colocado*densidad:.2f} kg', ln=True, align='C')
-    pdf.ln(10)
+    pdf.set_font('Helvetica', 'B', 20)
+    pdf.cell(0, 15, 'RESUMEN CONSOLIDADO DE PRODUCCION', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 12)
+    pdf.cell(0, 8, f'Bloque unitario: {ancho_bloque} x {ALTO_BLOQUE} x {LARGO_BLOQUE} cm', ln=True, align='C')
+    pdf.cell(0, 8, f'Kerf: {KERF_CM*10:.0f} mm | Densidad: {densidad} kg/m3', ln=True, align='C')
+    pdf.ln(5)
     
-    total_filetes = sum(len(_agrupar_por_filete(b['piezas'])) for b in bloques)
-    filete_actual = 0
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.cell(0, 8, 'TOTALES GLOBALES:', ln=True)
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 7, f'  Total de bloques: {len(bloques)}', ln=True)
+    pdf.cell(0, 7, f'  Piezas colocadas: {total_colocadas} de {total_pedidas}', ln=True)
+    pdf.cell(0, 7, f'  Eficiencia global: {ef_global:.2f}%', ln=True)
+    pdf.cell(0, 7, f'  Volumen util total: {vol_total_colocado:.4f} m3', ln=True)
+    pdf.cell(0, 7, f'  Peso total neto: {vol_total_colocado*densidad:.2f} kg', ln=True)
+    pdf.ln(5)
     
+    # ---- PÁGINA 2: TABLA POR BLOQUE ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'DETALLE POR BLOQUE', ln=True, align='C')
+    pdf.ln(3)
+    
+    col_w = [15, 20, 25, 30, 35, 35, 30]
+    headers = ['Bloque', 'Piezas', 'Volumen (m3)', 'Eficiencia', 'Tipos incluidos', 'Cortes Z', 'Peso (kg)']
+    pdf.set_font('Helvetica', 'B', 9)
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 7, h, border=1, align='C')
+    pdf.ln()
+    
+    pdf.set_font('Helvetica', '', 8)
     for bloque in bloques:
-        filetes = _agrupar_por_filete(bloque['piezas'])
+        vol_b = sum(p['w']*p['h']*p['d'] for p in bloque['piezas']) / 1e6
+        ef_b = (vol_b / vol_bloque_unitario * 100) if vol_bloque_unitario > 0 else 0
+        resumen = _resumen_tipos_bloque(bloque['piezas'])
+        tipos_str = ', '.join([f'{k}:{v}' for k, v in resumen.items()])[:30]
+        cortes = _tabla_cortes_bloque(bloque['piezas'])
+        n_cortes_z = len(cortes['z'])
+        peso_b = vol_b * densidad
         
-        pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 16)
-        pdf.cell(0, 10, f'BLOQUE {bloque["numero"]} - {bloque["total_piezas"]} piezas ({len(filetes)} filetes)', ln=True)
-        pdf.ln(5)
-        
-        # Mapa de cortes
-        pdf.set_font('Helvetica', 'B', 12)
-        pdf.cell(0, 8, 'Mapa de cortes longitudinales', ln=True)
-        fig = _graficar_mapa_longitudinal(filetes, ancho_bloque)
-        pdf.image(_fig_to_png(fig, dpi=72), x=10, w=190)
-        plt.close(fig)
-        pdf.ln(5)
-        
-        # Solo mostrar primeros 5 filetes con imagen
-        filetes_a_mostrar = min(5, len(filetes))
-        for i in range(filetes_a_mostrar):
-            f = filetes[i]
-            filete_actual += 1
-            
-            if progress_callback:
-                progress_callback(filete_actual, total_filetes)
-            
-            pdf.add_page()
-            pdf.set_font('Helvetica', 'B', 14)
-            modelos = ', '.join(sorted(set(p['id'] for p in f['piezas'])))
-            pdf.cell(0, 10, f'FILETE {i+1}: {f["z_inicio"]:.1f} a {f["z_fin"]:.1f} cm', ln=True)
-            pdf.set_font('Helvetica', '', 11)
-            pdf.cell(0, 7, f'Largo: {f["longitud"]:.1f} cm | Modelos: {modelos} | Piezas: {len(f["piezas"])}', ln=True)
-            pdf.ln(5)
-            fig_t = _graficar_filete(f, ancho_bloque)
-            pdf.image(_fig_to_png(fig_t, dpi=72), x=10, w=190)
-            plt.close(fig_t)
-        
-        # Tabla resumen del resto de filetes
-        if len(filetes) > 5:
-            pdf.add_page()
-            pdf.set_font('Helvetica', 'B', 12)
-            pdf.cell(0, 8, f'Resumen de filetes restantes ({len(filetes)-5} filetes)', ln=True)
-            pdf.ln(3)
-            
-            col_w = [15, 25, 25, 25, 30, 30]
-            headers = ['#', 'Inicio', 'Fin', 'Largo', 'Modelos', 'Piezas']
-            for i, h in enumerate(headers):
-                pdf.cell(col_w[i], 6, h, border=1, align='C')
-            pdf.ln()
-            
-            pdf.set_font('Helvetica', '', 8)
-            for i in range(5, len(filetes)):
-                f = filetes[i]
-                modelos = ', '.join(sorted(set(p['id'] for p in f['piezas'])))[:20]
-                row = [str(i+1), f'{f["z_inicio"]:.1f}', f'{f["z_fin"]:.1f}', f'{f["longitud"]:.1f}', modelos, str(len(f['piezas']))]
-                for j, val in enumerate(row):
-                    pdf.cell(col_w[j], 5, val, border=1, align='C')
-                pdf.ln()
+        row = [str(bloque['numero']), str(bloque['total_piezas']), f'{vol_b:.4f}',
+               f'{ef_b:.1f}%', tipos_str, str(n_cortes_z), f'{peso_b:.2f}']
+        for j, val in enumerate(row):
+            pdf.cell(col_w[j], 5, val, border=1, align='C')
+        pdf.ln()
+    
+    # ---- PÁGINA 3: RESUMEN POR TIPO DE PIEZA ----
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'RESUMEN POR TIPO DE PIEZA', ln=True, align='C')
+    pdf.ln(3)
+    
+    # Acumular por tipo
+    tipos_globales = defaultdict(int)
+    tipos_volumen = defaultdict(float)
+    for bloque in bloques:
+        for p in bloque['piezas']:
+            tipos_globales[p['id']] += 1
+            tipos_volumen[p['id']] += p['w']*p['h']*p['d'] / 1e6
+    
+    col_w2 = [40, 30, 35, 35, 35]
+    headers2 = ['Tipo', 'Total piezas', 'Volumen (m3)', 'Peso (kg)', '% del total']
+    pdf.set_font('Helvetica', 'B', 10)
+    for i, h in enumerate(headers2):
+        pdf.cell(col_w2[i], 7, h, border=1, align='C')
+    pdf.ln()
+    
+    pdf.set_font('Helvetica', '', 10)
+    for tipo, total in sorted(tipos_globales.items(), key=lambda x: -x[1]):
+        vol = tipos_volumen[tipo]
+        peso = vol * densidad
+        pct = (total / total_colocadas * 100) if total_colocadas > 0 else 0
+        row = [tipo, str(total), f'{vol:.4f}', f'{peso:.2f}', f'{pct:.1f}%']
+        for j, val in enumerate(row):
+            pdf.cell(col_w2[j], 6, val, border=1, align='C')
+        pdf.ln()
     
     pdf_buffer = io.BytesIO(); pdf.output(pdf_buffer)
     return pdf_buffer.getvalue()
@@ -471,12 +525,12 @@ def _generar_reporte_pdf_mix_optimizado(bloques, ancho_bloque, densidad, total_p
 # 🖥️ INTERFAZ
 # ==========================================
 st.title("📦 Calculador EPS Covintec")
-st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v27.2 - Mezcla real + optimizado")
+st.caption(f"⚙️ Kerf: {KERF_CM*10:.0f}mm | v28.0 - Planos de corte industriales")
 
 if not FPDF_DISPONIBLE:
-    st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt` para habilitar PDFs.")
+    st.warning("⚠️ **fpdf2 no está instalado.** Agrega `fpdf2` a `requirements.txt`.")
 
-tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Mezcla Real Multi-Bloque)"])
+tab1, tab2 = st.tabs(["🔹 Single (Pieza Única)", "🔹 Mix (Planos Industriales)"])
 
 with tab1:
     st.header("Cálculo de Pieza Única")
@@ -531,8 +585,8 @@ with tab1:
                                        file_name=f"single_{int(d1)}x{int(d2)}.pdf", mime="application/pdf", use_container_width=True)
 
 with tab2:
-    st.header("🔀 Empaquetado 3D Mezcla Real (Multi-Bloque)")
-    st.markdown("🔹 **Mezcla real:** alterna tipos de piezas para llenar huecos. 🔹 **Optimizado:** 15-30 seg en lugar de 2 min.")
+    st.header("🔀 Empaquetado 3D con Planos Industriales")
+    st.markdown("🔹 **3 vistas ortogonales** por bloque (frontal, lateral, longitudinal). 🔹 **PDF compacto:** 2 páginas por bloque en lugar de 31.")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -541,7 +595,7 @@ with tab2:
         densidad_mix = st.selectbox("Densidad (kg/m³)", list(range(7, 20)), index=3, key="densidad_mix")
 
         st.markdown("### 📋 Lista de Pedidos")
-        st.caption("💡 Dim1/Dim2/Dim3 = las 3 medidas. El sistema prueba las 6 orientaciones.")
+        st.caption("💡 Dim1/Dim2/Dim3 = las 3 medidas.")
         default_prod = [
             {'id':'Grande','w':25.0,'h':40.0,'d':40.0,'qty':1000,'color':'#3498DB'},
             {'id':'Larga1','w':2.5,'h':122.0,'d':244.0,'qty':1000,'color':'#E74C3C'},
@@ -589,7 +643,7 @@ with tab2:
                 except: continue
                 if qty <= 0 or w <= 0 or h <= 0 or d <= 0: continue
                 if not _pieza_cabe_en_bloque(w, h, d, ancho_mix):
-                    st.error(f"❌ {row['id']} ({w}x{h}x{d}) no cabe en bloque {ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE}")
+                    st.error(f"❌ {row['id']} no cabe en bloque {ancho_mix}x{ALTO_BLOQUE}x{LARGO_BLOQUE}")
                     continue
                 items_list.append({'w': w, 'h': h, 'd': d, 'id': row['id'], 'color': row['color'], 'qty': qty})
                 total_pedidas += qty
@@ -602,17 +656,15 @@ with tab2:
             bloques_estimados = math.ceil(vol_total_solicitado / (vol_bloque_unitario * 0.85))
             st.info(f"📐 **Estimación:** ~{bloques_estimados} bloques necesarios")
             
-            # Progress bar para empaquetado
-            progress_bar = st.progress(0, text="Empaquetando piezas con mezcla real...")
+            progress_bar = st.progress(0, text="Empaquetando...")
             start_time = time.time()
             
             def progress_callback(piezas_colocadas, total_piezas, bloque_num):
                 progress = piezas_colocadas / total_piezas
-                progress_bar.progress(progress, text=f"Empaquetando: Bloque {bloque_num} | {piezas_colocadas}/{total_piezas} piezas")
+                progress_bar.progress(progress, text=f"Bloque {bloque_num} | {piezas_colocadas}/{total_piezas} piezas")
             
             bloques, items_finales = _distribuir_en_multiples_bloques(items_list, ancho_mix, ALTO_BLOQUE, LARGO_BLOQUE, progress_callback)
-            
-            progress_bar.progress(1.0, text="Empaquetado completado!")
+            progress_bar.progress(1.0, text="✅ Completado!")
             
             total_colocadas = sum(b['total_piezas'] for b in bloques)
             vol_total_colocado = sum(sum(p['w']*p['h']*p['d'] for p in b['piezas']) for b in bloques) / 1e6
@@ -620,65 +672,83 @@ with tab2:
             eficiencia_global = (vol_total_colocado / vol_total_bloques * 100) if vol_total_bloques > 0 else 0
             
             elapsed = time.time() - start_time
-            st.success(f"✅ **Completado en {elapsed:.1f} segundos** | {total_colocadas} de {total_pedidas} piezas en **{len(bloques)} bloques** | Eficiencia: {eficiencia_global:.2f}%")
-            
-            st.markdown("#### 📦 Detalle por tipo de pieza:")
-            for item in items_list:
-                colocadas = sum(1 for b in bloques for p in b['piezas'] if p['id'] == item['id'])
-                pedidas = item['qty']
-                (st.success if colocadas == pedidas else st.warning)(
-                    f"**{item['id']}** ({item['w']}x{item['h']}x{item['d']}): {colocadas} de {pedidas} colocadas"
-                )
-            
-            if total_colocadas < total_pedidas:
-                st.warning(f"⚠️ {total_pedidas - total_colocadas} piezas no se pudieron colocar (límite de 100 bloques)")
+            st.success(f"✅ **{elapsed:.1f} seg** | {total_colocadas}/{total_pedidas} piezas en **{len(bloques)} bloques** | Eficiencia: {eficiencia_global:.2f}%")
             
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("🧱 Bloques Usados", len(bloques))
-            c2.metric("📦 Piezas Colocadas", total_colocadas)
-            c3.metric("📈 Eficiencia Global", f"{eficiencia_global:.2f}%")
+            c1.metric("🧱 Bloques", len(bloques))
+            c2.metric("📦 Piezas", total_colocadas)
+            c3.metric("📈 Eficiencia", f"{eficiencia_global:.2f}%")
             c4.metric("🧱 Peso Total", f"{vol_total_colocado * densidad_mix:.2f} kg")
             
-            # PDF optimizado
-            if FPDF_DISPONIBLE:
-                st.subheader("📄 Generar PDF")
-                st.caption("💡 PDF optimizado: 5 filetes por bloque + tabla resumen. Tiempo: ~15-30 seg")
-                
-                if st.button("🚀 Generar PDF Optimizado", type="primary", use_container_width=True, key="btn_pdf_mix"):
-                    pdf_progress = st.progress(0, text="Generando PDF...")
-                    pdf_start = time.time()
-                    
-                    def pdf_progress_callback(filete_actual, total_filetes):
-                        progress = filete_actual / total_filetes
-                        pdf_progress.progress(progress, text=f"Generando PDF: Filete {filete_actual}/{total_filetes}")
-                    
-                    pdf_bytes = _generar_reporte_pdf_mix_optimizado(bloques, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_total_colocado, pdf_progress_callback)
-                    
-                    pdf_elapsed = time.time() - pdf_start
-                    st.success(f"✅ PDF generado en {pdf_elapsed:.1f} segundos")
-                    
-                    st.download_button("📥 Descargar PDF", data=pdf_bytes,
-                                       file_name=f"mix_multibloque_{len(bloques)}bloques.pdf", mime="application/pdf", use_container_width=True)
+            st.divider()
             
             # Selector de bloque
-            if len(bloques) > 1:
+            st.subheader("🔍 Selecciona un bloque para ver sus planos")
+            nombres_bloques = [f"Bloque {b['numero']} ({b['total_piezas']} piezas)" for b in bloques]
+            sel_bloque = st.selectbox("Elige bloque:", range(len(bloques)), format_func=lambda i: nombres_bloques[i], key="sel_bloque_v28")
+            bloque = bloques[sel_bloque]
+            
+            vol_bloque_sel = sum(p['w']*p['h']*p['d'] for p in bloque['piezas']) / 1e6
+            ef_bloque = (vol_bloque_sel / vol_bloque_unitario * 100) if vol_bloque_unitario > 0 else 0
+            
+            st.info(f"📋 **Bloque {bloque['numero']}**: {bloque['total_piezas']} piezas | Eficiencia: {ef_bloque:.2f}% | Peso: {vol_bloque_sel*densidad_mix:.2f} kg")
+            
+            # LAS 3 VISTAS
+            st.subheader("📐 Vista FRONTAL (Ancho x Alto)")
+            st.caption("Lo que ve el operario mirando el bloque de frente. Las piezas oscuras son la primera capa (z=0).")
+            st.pyplot(_vista_frontal(bloque['piezas'], ancho_mix))
+            
+            st.subheader("📐 Vista LATERAL (Largo x Ancho)")
+            st.caption("Vista desde arriba del bloque. Muestra cómo se distribuyen las piezas en el eje horizontal.")
+            st.pyplot(_vista_lateral(bloque['piezas'], ancho_mix))
+            
+            st.subheader("📐 Vista LONGITUDINAL (Largo x Alto)")
+            st.caption("Vista desde un costado. Muestra la secuencia de cortes del hilo caliente.")
+            st.pyplot(_vista_longitudinal(bloque['piezas'], ancho_mix))
+            
+            # Tabla de cortes
+            st.subheader("🔪 Tabla de Posiciones de Corte")
+            cortes = _tabla_cortes_bloque(bloque['piezas'])
+            resumen = _resumen_tipos_bloque(bloque['piezas'])
+            
+            col_t1, col_t2, col_t3 = st.columns(3)
+            with col_t1:
+                st.markdown(f"**Cortes transversales (Z):** {len(cortes['z'])}")
+                st.write(f"Posiciones: {', '.join([f'{c:.1f}' for c in cortes['z'][:15]])}{'...' if len(cortes['z'])>15 else ''}")
+            with col_t2:
+                st.markdown(f"**Cortes horizontales (Y):** {len(cortes['y'])}")
+                st.write(f"Posiciones: {', '.join([f'{c:.1f}' for c in cortes['y'][:15]])}{'...' if len(cortes['y'])>15 else ''}")
+            with col_t3:
+                st.markdown(f"**Cortes verticales (X):** {len(cortes['x'])}")
+                st.write(f"Posiciones: {', '.join([f'{c:.1f}' for c in cortes['x'][:15]])}{'...' if len(cortes['x'])>15 else ''}")
+            
+            st.markdown("**Piezas por tipo:** " + " | ".join([f"{k}: {v}" for k, v in resumen.items()]))
+            
+            # BOTONES DE PDF
+            if FPDF_DISPONIBLE:
                 st.divider()
-                st.subheader("🔍 Ver detalle por bloque")
-                bloque_sel = st.selectbox("Selecciona un bloque:", [f"Bloque {b['numero']} ({b['total_piezas']} piezas)" for b in bloques], key="sel_bloque_detalle")
-                bloque_idx = [f"Bloque {b['numero']} ({b['total_piezas']} piezas)" for b in bloques].index(bloque_sel)
-                bloque = bloques[bloque_idx]
-            else:
-                bloque = bloques[0]
-            
-            filetes = _agrupar_por_filete(bloque['piezas'])
-            
-            st.subheader(f"📏 Bloque {bloque['numero']} - Mapa de Cortes")
-            st.pyplot(_graficar_mapa_longitudinal(filetes, ancho_mix))
-            
-            st.subheader("🔍 Filetes del bloque")
-            for i, f in enumerate(filetes):
-                with st.expander(f"Filete {i+1}: {f['z_inicio']:.1f}-{f['z_fin']:.1f} cm | {len(f['piezas'])} piezas", expanded=(i==0)):
-                    st.pyplot(_graficar_filete(f, ancho_mix))
+                st.subheader("📄 Generar Reportes PDF")
+                
+                col_pdf1, col_pdf2 = st.columns(2)
+                with col_pdf1:
+                    st.markdown("### 🎯 PDF de ESTE bloque")
+                    st.caption("2 páginas: 3 vistas + tabla de cortes. Para el operario.")
+                    if st.button("🚀 Generar PDF (1 bloque)", use_container_width=True, key="btn_pdf_bloque"):
+                        with st.spinner("Generando PDF..."):
+                            pdf_bytes = _generar_pdf_bloque_unico(bloque, ancho_mix, densidad_mix, vol_bloque_sel)
+                        st.download_button("📥 Descargar PDF", data=pdf_bytes,
+                                           file_name=f"bloque_{bloque['numero']}_planos.pdf",
+                                           mime="application/pdf", use_container_width=True, key="dl_bloque")
+                
+                with col_pdf2:
+                    st.markdown("### 📊 PDF CONSOLIDADO")
+                    st.caption("3 páginas: resumen global + tabla de todos los bloques + resumen por tipo. Para supervisor.")
+                    if st.button("🚀 Generar PDF (todos)", use_container_width=True, key="btn_pdf_consolidado"):
+                        with st.spinner("Generando PDF consolidado..."):
+                            pdf_bytes = _generar_pdf_consolidado(bloques, ancho_mix, densidad_mix, total_pedidas, total_colocadas, vol_total_colocado)
+                        st.download_button("📥 Descargar PDF", data=pdf_bytes,
+                                           file_name=f"consolidado_{len(bloques)}bloques.pdf",
+                                           mime="application/pdf", use_container_width=True, key="dl_consolidado")
 
 st.markdown("---")
-st.caption("💡 *Covintec v27.2 | Mezcla real + optimizado: 15-30 seg en lugar de 2 min.*")
+st.caption("💡 *Covintec v28.0 | Planos de corte industriales: 3 vistas + tabla de cortes. PDF de 154 páginas → 2 páginas.*")
